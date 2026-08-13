@@ -20,6 +20,8 @@ from .backtest.engine import run_backtest
 from .config import Config
 from .data import synthetic
 from .data.csvsource import load_fixtures_csv, load_results_csv
+from .data.providers import PROVIDER_INFO, ProviderError, available_providers, get_provider
+from .data.teams import parse_alias_arguments, reconcile_fixtures
 from .data.footballdata import (
     DEFAULT_PRICE_MODE,
     LEAGUES,
@@ -49,6 +51,19 @@ def _add_data_arguments(parser: argparse.ArgumentParser) -> None:
                         help="never hit the network; use cached files only")
     parser.add_argument("--synthetic", action="store_true",
                         help="use the generated offline dataset (no network needed)")
+    parser.add_argument("--odds-provider", default="footballdata",
+                        choices=available_providers(),
+                        help="where live prices come from (default: footballdata). "
+                             "Live providers need an API key — see `bettingedge providers`.")
+    parser.add_argument("--api-key", help="API key for the odds provider "
+                                          "(otherwise read from the environment)")
+    parser.add_argument("--days-ahead", type=int, default=7,
+                        help="how far ahead to pull fixtures from a live provider")
+    parser.add_argument("--team-alias", action="append", metavar="PROVIDER=MODEL",
+                        help="force a team name mapping, e.g. "
+                             "--team-alias \"Manchester United=Man United\". Repeatable.")
+    parser.add_argument("--dump-raw", help="write the provider's raw payload here for "
+                                           "debugging")
     parser.add_argument("--price-mode", default=DEFAULT_PRICE_MODE, choices=list(PRICE_MODES),
                         help="which price snapshot to read: 'best-closing' (default, best "
                              "price across books at the close), 'early' (pre-closing price "
@@ -119,10 +134,44 @@ def _load_fixtures(args: argparse.Namespace):
     if getattr(args, "synthetic", False):
         _, fixtures = synthetic.generate(seasons=max(2, args.seasons))
         return fixtures
-    print("Loading upcoming fixtures and prices ...")
-    fixtures = _source(args).fixtures([args.league])
+
+    provider_name = getattr(args, "odds_provider", "footballdata")
+    if provider_name == "footballdata":
+        print("Loading upcoming fixtures and prices ...")
+        fixtures = _source(args).fixtures([args.league])
+    else:
+        info = PROVIDER_INFO[provider_name]
+        print(f"Loading live prices from {info.title} ...")
+        provider = get_provider(
+            provider_name,
+            api_key=getattr(args, "api_key", None),
+            dump_raw=getattr(args, "dump_raw", None),
+        )
+        fixtures = provider.fixtures(args.league,
+                                     days_ahead=getattr(args, "days_ahead", 7))
     print(f"  {len(fixtures)} fixtures with prices")
     return fixtures
+
+
+def _reconcile(fixtures, matches, args: argparse.Namespace):
+    """Map provider team names onto the names the model was fitted on.
+
+    Always run, even for the default source: a mismatch here silently prices
+    every fixture off league-average ratings.
+    """
+    if not fixtures or not matches:
+        return fixtures
+    known = {m.home for m in matches} | {m.away for m in matches}
+    try:
+        aliases = parse_alias_arguments(getattr(args, "team_alias", None))
+    except ValueError as exc:
+        raise SystemExit(f"Error: {exc}")
+
+    resolved, report = reconcile_fixtures(fixtures, known, extra_aliases=aliases)
+    if report.dropped_fixtures or report.fuzzy or report.unresolved:
+        print()
+        print(report.render())
+    return resolved
 
 
 # --------------------------------------------------------------------------
@@ -152,6 +201,13 @@ def cmd_recommend(args: argparse.Namespace) -> int:
               "The free fixtures feed only covers the next few days and is empty "
               "between seasons.\nSupply your own with --fixtures-csv, or try "
               "`bettingedge demo`.", file=sys.stderr)
+        return 1
+
+    fixtures = _reconcile(fixtures, matches, args)
+    if not fixtures:
+        print("\nEvery fixture was dropped during team-name matching. Use "
+              "--team-alias to map the\nnames your odds provider uses onto the "
+              "names in your results data.", file=sys.stderr)
         return 1
 
     if args.max_fixtures:
@@ -309,6 +365,57 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_providers(args: argparse.Namespace) -> int:
+    if args.list_sports:
+        provider = get_provider("theoddsapi", api_key=args.api_key)
+        print("\nSport keys your Odds API key can access:\n")
+        for sport in provider.sports():
+            if str(sport.get("key", "")).startswith("soccer"):
+                print(f"  {sport.get('key'):<40} {sport.get('title')}")
+        return 0
+
+    print("\nOdds sources\n" + "=" * 74)
+    for info in PROVIDER_INFO.values():
+        print(f"\n  {info.title}   [--odds-provider {info.key}]")
+        print(f"    {info.url}")
+        print(f"    free tier : {info.free_tier}")
+        print(f"    markets   : {info.markets}")
+        if info.env_vars:
+            print(f"    api key   : set {' or '.join(info.env_vars)}, or pass --api-key")
+        for line in _wrap_text(info.notes, 66):
+            print(f"    {line}")
+
+    print("""
+Getting started with live prices
+--------------------------------
+  1. Sign up for a free key at https://the-odds-api.com
+  2. export ODDS_API_KEY=your-key-here
+  3. bettingedge recommend --league E0 --odds-provider theoddsapi
+
+History still comes from football-data.co.uk, because it is the only free
+source that carries results and closing prices together — which is what makes
+backtesting honest. Live providers supply the upcoming card only.
+
+Because the two sources spell teams differently, names are reconciled
+automatically and anything unresolved is reported rather than guessed at. Fix
+stragglers with --team-alias "Provider Name=Model Name".
+""")
+    return 0
+
+
+def _wrap_text(text: str, width: int) -> list[str]:
+    words, lines, current = text.split(), [], ""
+    for word in words:
+        if len(current) + len(word) + 1 > width:
+            lines.append(current)
+            current = word
+        else:
+            current = f"{current} {word}".strip()
+    if current:
+        lines.append(current)
+    return lines
+
+
 def cmd_leagues(args: argparse.Namespace) -> int:
     print("\nLeague codes (football-data.co.uk):\n")
     for code, name in LEAGUES.items():
@@ -399,6 +506,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     leagues = subparsers.add_parser("leagues", help="list supported league codes")
     leagues.set_defaults(func=cmd_leagues)
+
+    providers = subparsers.add_parser(
+        "providers", help="list live odds sources and how to set them up")
+    providers.add_argument("--list-sports", action="store_true",
+                           help="query The Odds API for the sport keys your account covers")
+    providers.add_argument("--api-key", help="API key, if not in the environment")
+    providers.set_defaults(func=cmd_providers)
 
     return parser
 

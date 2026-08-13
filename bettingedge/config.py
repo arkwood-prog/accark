@@ -74,6 +74,13 @@ class SelectionConfig:
     # Cap on how many singles are surfaced per matchday.
     max_singles: int = 25
 
+    # Refuse to price a fixture when the model has never seen one of the teams.
+    # Without this an unrecognised name is silently treated as a league-average
+    # side and the fixture still produces confident-looking bets — the single
+    # most dangerous failure mode when fixtures come from a different source
+    # than the results the model was fitted on.
+    require_known_teams: bool = True
+
     # Markets the engine is allowed to quote.
     markets: tuple[str, ...] = ("1X2", "DC", "OU", "BTTS")
 

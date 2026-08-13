@@ -139,6 +139,20 @@ class Engine:
                 skipped.append({"fixture": f"{fixture.home} v {fixture.away}",
                                 "reason": "no odds available"})
                 continue
+            if cfg.selection.require_known_teams:
+                unknown = [team for team in (fixture.home, fixture.away)
+                           if not model.knows(team)]
+                if unknown:
+                    # Pricing this would use league-average ratings and look
+                    # exactly as confident as a real read. Usually a team-name
+                    # mismatch between the odds source and the results source.
+                    skipped.append({
+                        "fixture": f"{fixture.home} v {fixture.away}",
+                        "reason": f"model has never seen {', '.join(unknown)} — "
+                                  "check team name matching between your odds and "
+                                  "results sources",
+                    })
+                    continue
             context = self.context_for(fixture, model, matches)
             if not context.quotes:
                 skipped.append({"fixture": f"{fixture.home} v {fixture.away}",

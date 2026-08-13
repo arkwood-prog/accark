@@ -262,8 +262,69 @@ Belgium B1, Portugal P1, Turkey T1, Greece G1.
 Upcoming fixtures come from that site's weekly fixtures feed, which only covers
 the next few days and is empty between seasons.
 
-**Your own prices.** For markets the free feed does not carry (BTTS, other
-over/under lines, an exchange price you can actually get), supply a CSV:
+### Live odds providers
+
+The free CSV feed carries only 1X2 and over/under 2.5, covers a few days ahead,
+and is empty between seasons. For a real live card, plug in a provider:
+
+```bash
+bettingedge providers                      # setup instructions and quotas
+export ODDS_API_KEY=your-key
+bettingedge recommend --league E0 --odds-provider theoddsapi
+```
+
+| Provider | Free tier | Markets | Key |
+|---|---|---|---|
+| `footballdata` *(default)* | unlimited, no key | 1X2, O/U 2.5 | — |
+| `theoddsapi` | ~500 requests/month | 1X2, all O/U lines, BTTS on some plans | `ODDS_API_KEY` |
+| `apifootball` | ~100 requests/day | 1X2, O/U, BTTS | `API_FOOTBALL_KEY` |
+
+A live provider returns *every* book's price per fixture, which suits this
+engine better than the CSV feed: best price and sharp reference come from one
+snapshot rather than being approximated by column choice. Pinnacle or an
+exchange is used as the sharp line where available; otherwise the thinnest
+margin wins.
+
+**History still comes from football-data.co.uk**, because it is the only free
+source carrying results and closing prices together — which is what makes
+backtesting honest. Providers supply the upcoming card only.
+
+Adding another source means implementing one method (`fixtures()`) against the
+`OddsProvider` protocol in `data/providers/base.py`.
+
+### Team names — the silent killer
+
+Your odds source says "Manchester United". Your results source says "Man
+United". The model has never heard of the former, so it treats it as a
+league-average side and prices the game anyway — producing a full card of
+confident-looking recommendations built on nothing.
+
+Two defences, both on by default:
+
+1. **Names are reconciled** before pricing, via a curated alias table for the
+   major European leagues plus similarity matching. The matcher **refuses to
+   guess** when two candidates score too closely, because "Man United" and
+   "Man City" are similar strings and a wrong match silently prices the wrong
+   team. Anything unresolved is reported, never assumed.
+2. **The engine refuses to price a team it has never seen** (`require_known_teams`).
+   Such fixtures land in `skipped` with the reason attached.
+
+```
+Team name matching: 3 fixture(s) resolved, 1 dropped.
+  Could not resolve:
+    'Real Betis' matched nothing in the model
+  Fix with --team-alias "Provider Name=Model Name", or check the league code matches.
+```
+
+Fix stragglers with a repeatable flag:
+
+```bash
+bettingedge recommend --league E0 --odds-provider theoddsapi \
+  --team-alias "Nottingham Forest=Nott'm Forest"
+```
+
+**Your own prices.** For markets no feed carries, or an exchange price you can
+actually get, supply a CSV:
 
 ```csv
 date,home,away,H,D,A,O2.5,U2.5,BTTS_Y,BTTS_N,sharp_H,sharp_D,sharp_A
@@ -309,14 +370,16 @@ and maximum acca legs are all live controls — moving them refits and reprices.
 | `demo` | Full run on generated offline data |
 | `recommend` | Price the upcoming card and recommend bets |
 | `verify` | Five-stage verification ladder on real data |
+| `providers` | List live odds sources and how to set them up |
 | `backtest` | Walk-forward test on historical results |
 | `ratings` | Current team strength table |
 | `serve` | Web dashboard |
 | `leagues` | List league codes |
 
 Common options: `--league`, `--seasons`, `--bankroll`, `--kelly`, `--min-edge`,
-`--model-weight`, `--half-life`, `--max-legs`, `--price-mode`, `--json`,
-`--markdown`, `--fixtures-csv`, `--results-csv`, `--offline`, `--synthetic`.
+`--model-weight`, `--half-life`, `--max-legs`, `--price-mode`, `--odds-provider`,
+`--api-key`, `--team-alias`, `--days-ahead`, `--dump-raw`, `--json`, `--markdown`,
+`--fixtures-csv`, `--results-csv`, `--offline`, `--synthetic`.
 
 ```bash
 # Before trusting anything: does the pipeline survive a hostile read?
@@ -341,6 +404,8 @@ bettingedge/
 ├── report.py            terminal and Markdown rendering
 ├── cli.py               command line interface
 ├── data/                schemas, football-data.co.uk, CSV import, synthetic league
+│   ├── providers/       live odds clients (The Odds API, API-Football)
+│   └── teams.py         cross-source team name matching
 ├── models/              Dixon-Coles fit, market masks, form/context
 ├── market/              devigging (multiplicative/power/Shin), consensus fair prices
 ├── betting/             value detection, multi construction, Kelly staking
@@ -359,7 +424,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-182 tests. The ones that matter most:
+234 tests. The ones that matter most:
 
 - the analytic gradient is verified against finite differences
 - the fitter recovers known parameters from a simulated league
@@ -373,6 +438,10 @@ pytest
   older seasons that have no closing prices
 - the verification ladder catches deliberately corrupted data — swapped home
   and away teams, impossible scorelines
+- provider payloads parse defensively: outcomes are matched by team name rather
+  than position, and malformed events are skipped rather than crashing
+- team matching never confuses Manchester United with Manchester City, and
+  refuses ambiguous matches instead of guessing
 
 ---
 
@@ -382,7 +451,8 @@ Stated plainly, because a model that hides its failure modes is a liability.
 
 - **Goals-only modelling knows nothing about football.** Injuries, suspensions,
   rotation before a cup tie, a manager sacked on Thursday, a team already safe
-  in mid-table in May. The market knows all of it.
+  in mid-table in May. The market knows all of it. Adding xG-based ratings and
+  an injury feed is the highest-value next step.
 - **A price you saw is not a price you can get.** Edges built on the best quote
   across many books shrink or vanish at the book you actually hold an account
   with. The analysis flags when an edge is mostly price shopping.
