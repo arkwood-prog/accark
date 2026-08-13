@@ -217,3 +217,63 @@ def test_synthetic_home_advantage_shows_up_in_the_results():
     home_wins = sum(1 for m in matches if m.result == "H")
     away_wins = sum(1 for m in matches if m.result == "A")
     assert home_wins > away_wins
+
+
+# ------------------------------------------------- BOM and league integrity
+# Regression tests for a real incident: football-data.co.uk served National
+# League data under the Premier League URL for a season that had not started.
+# The rows were labelled Div=EC, but a byte-order mark glued itself to the
+# first column name, so `row["Div"]` read as None and the guard never fired —
+# 12 non-league matches were absorbed into a Premier League model.
+BOM = "﻿"
+
+MIXED_DIVISION_CSV = BOM + """Div,Date,HomeTeam,AwayTeam,FTHG,FTAG,B365H,B365D,B365A
+E0,16/08/2024,Arsenal,Chelsea,2,1,1.80,3.75,4.50
+EC,08/08/2026,Altrincham,Southend,1,3,4.00,3.80,1.73
+EC,08/08/2026,Woking,Sutton,0,3,2.20,3.40,3.30
+"""
+
+
+def test_byte_order_mark_does_not_hide_the_division_column():
+    """With a BOM present, the Div column must still be readable."""
+    import csv, io
+
+    rows = list(csv.DictReader(io.StringIO(MIXED_DIVISION_CSV.lstrip(BOM))))
+    assert rows[0]["Div"] == "E0", "BOM left glued to the first column name"
+
+
+def test_rows_from_another_division_are_rejected():
+    matches = parse_results_csv(MIXED_DIVISION_CSV, "E0")
+    assert len(matches) == 1
+    assert matches[0].home == "Arsenal"
+    assert all(m.league == "E0" for m in matches)
+
+
+def test_the_division_guard_can_be_disabled():
+    matches = parse_results_csv(MIXED_DIVISION_CSV, "E0", strict_league=False)
+    assert len(matches) == 3
+
+
+def test_division_matching_is_case_insensitive():
+    csv_text = BOM + ("Div,Date,HomeTeam,AwayTeam,FTHG,FTAG,B365H,B365D,B365A\n"
+                      "e0,16/08/2024,Arsenal,Chelsea,2,1,1.80,3.75,4.50\n")
+    assert len(parse_results_csv(csv_text, "E0")) == 1
+
+
+def test_files_without_a_division_column_still_parse():
+    """Some older files omit Div entirely; the guard must not reject everything."""
+    csv_text = ("Date,HomeTeam,AwayTeam,FTHG,FTAG,B365H,B365D,B365A\n"
+                "16/08/2024,Arsenal,Chelsea,2,1,1.80,3.75,4.50\n")
+    assert len(parse_results_csv(csv_text, "E0")) == 1
+
+
+def test_fixture_league_filter_survives_a_byte_order_mark():
+    """With a BOM this filter matched nothing, silently returning zero fixtures."""
+    fixtures_text = BOM + (
+        "Div,Date,HomeTeam,AwayTeam,B365H,B365D,B365A,MaxH,MaxD,MaxA,AvgH,AvgD,AvgA\n"
+        "E0,24/08/2024,Chelsea,Everton,1.55,4.20,6.00,1.60,4.40,6.30,1.54,4.15,5.90\n"
+        "D1,24/08/2024,Bayern Munich,Freiburg,1.20,7.50,13.0,1.24,7.80,14.0,1.19,7.40,12.5\n"
+    )
+    only_english = parse_fixtures_csv(fixtures_text, ["E0"])
+    assert len(only_english) == 1
+    assert only_english[0].home == "Chelsea"

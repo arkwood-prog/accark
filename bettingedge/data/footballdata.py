@@ -241,13 +241,26 @@ def _row_teams(row: dict[str, str]) -> tuple[str, str]:
 
 
 def parse_results_csv(text: str, league: str,
-                      price_mode: str | PriceMode | None = None) -> list[Match]:
-    """Parse a football-data.co.uk season file into Match objects."""
+                      price_mode: str | PriceMode | None = None,
+                      strict_league: bool = True) -> list[Match]:
+    """Parse a football-data.co.uk season file into Match objects.
+
+    ``strict_league`` rejects rows whose ``Div`` column disagrees with the
+    league that was requested. This is not paranoia: the site has served
+    another division's data under a league's URL for a season that had not
+    started yet, and without this check those matches are silently absorbed
+    into the wrong model.
+    """
     mode = resolve_price_mode(price_mode)
     matches: list[Match] = []
-    reader = csv.DictReader(io.StringIO(text))
+    wrong_division = 0
+    reader = csv.DictReader(io.StringIO(text.lstrip("\ufeff")))
     for row in reader:
         if not row:
+            continue
+        division = (row.get("Div") or "").strip()
+        if strict_league and division and division.upper() != league.upper():
+            wrong_division += 1
             continue
         match_date = _parse_date(row.get("Date", ""))
         home, away = _row_teams(row)
@@ -272,6 +285,9 @@ def parse_results_csv(text: str, league: str,
                 best_odds=best,
             )
         )
+    if wrong_division:
+        print(f"  ! {wrong_division} row(s) in the {league} file are labelled as a "
+              f"different division and were rejected")
     matches.sort(key=lambda m: m.date)
     return matches
 
@@ -285,12 +301,12 @@ def parse_fixtures_csv(text: str, leagues: Sequence[str] | None = None,
     chains fall through to what exists.
     """
     mode = resolve_price_mode(price_mode)
-    wanted = set(leagues) if leagues else None
+    wanted = {code.upper() for code in leagues} if leagues else None
     fixtures: list[Fixture] = []
-    reader = csv.DictReader(io.StringIO(text))
+    reader = csv.DictReader(io.StringIO(text.lstrip("\ufeff")))
     for row in reader:
         div = (row.get("Div") or "").strip()
-        if wanted and div not in wanted:
+        if wanted and div.upper() not in wanted:
             continue
         fixture_date = _parse_date(row.get("Date", ""))
         home, away = _row_teams(row)
@@ -348,7 +364,9 @@ class FootballDataUK:
                 age_hours = (datetime.now().timestamp() - cache_file.stat().st_mtime) / 3600
                 fresh = age_hours < max_age_hours
             if fresh or self.offline:
-                return cache_file.read_text(encoding="utf-8", errors="replace")
+                # utf-8-sig: these files carry a BOM, which otherwise ends up
+                # glued to the first column name.
+                return cache_file.read_text(encoding="utf-8-sig", errors="replace")
         if self.offline:
             raise FileNotFoundError(f"offline mode and no cached copy of {cache_name}")
 
@@ -356,7 +374,7 @@ class FootballDataUK:
 
         response = requests.get(url, timeout=self.timeout)
         response.raise_for_status()
-        text = response.content.decode("utf-8", errors="replace")
+        text = response.content.decode("utf-8-sig", errors="replace")
         cache_file.write_text(text, encoding="utf-8")
         return text
 
