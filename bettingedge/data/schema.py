@@ -95,10 +95,24 @@ class Match:
     closing_odds: dict[str, float] = field(default_factory=dict)
     # Best price across all books (what you could actually have taken).
     best_odds: dict[str, float] = field(default_factory=dict)
+    # Match statistics, where the source carries them. Shots on target drive
+    # the expected-goals proxy, which is a far less noisy measure of how a
+    # team actually played than the scoreline is.
+    home_shots: int | None = None
+    away_shots: int | None = None
+    home_shots_on_target: int | None = None
+    away_shots_on_target: int | None = None
+    home_corners: int | None = None
+    away_corners: int | None = None
 
     @property
     def total_goals(self) -> int:
         return self.home_goals + self.away_goals
+
+    @property
+    def has_shot_data(self) -> bool:
+        return (self.home_shots_on_target is not None
+                and self.away_shots_on_target is not None)
 
     @property
     def result(self) -> str:

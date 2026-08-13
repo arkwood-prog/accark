@@ -234,6 +234,27 @@ def _odds_from_row(
     return best, sharp, counts
 
 
+def _to_int(raw: str | None) -> int | None:
+    if raw is None or not str(raw).strip():
+        return None
+    try:
+        return int(float(raw))
+    except ValueError:
+        return None
+
+
+def _stats_from_row(row: dict[str, str]) -> dict[str, int | None]:
+    """Shots, shots on target and corners, where the file carries them."""
+    return {
+        "home_shots": _to_int(row.get("HS")),
+        "away_shots": _to_int(row.get("AS")),
+        "home_shots_on_target": _to_int(row.get("HST")),
+        "away_shots_on_target": _to_int(row.get("AST")),
+        "home_corners": _to_int(row.get("HC")),
+        "away_corners": _to_int(row.get("AC")),
+    }
+
+
 def _row_teams(row: dict[str, str]) -> tuple[str, str]:
     home = (row.get("HomeTeam") or row.get("Home") or "").strip()
     away = (row.get("AwayTeam") or row.get("Away") or "").strip()
@@ -273,6 +294,7 @@ def parse_results_csv(text: str, league: str,
         except ValueError:
             continue
         best, sharp, _ = _odds_from_row(row, mode)
+        stats = _stats_from_row(row)
         matches.append(
             Match(
                 date=match_date,
@@ -283,6 +305,7 @@ def parse_results_csv(text: str, league: str,
                 away_goals=away_goals,
                 closing_odds=sharp,
                 best_odds=best,
+                **stats,
             )
         )
     if wrong_division:

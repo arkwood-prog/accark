@@ -33,6 +33,7 @@ from scipy.special import gammaln
 
 from ..config import ModelConfig
 from ..data.schema import Match
+from .expected_goals import ShotConversion, blended_targets, fit_conversion
 
 
 @dataclass
@@ -62,6 +63,8 @@ class FittedModel:
     effective_sample: float
     log_likelihood: float
     converged: bool
+    conversion: ShotConversion | None = None
+    xg_weight: float = 0.0
     fitted_through: date | None = None
     _index: dict[str, int] = field(default_factory=dict, repr=False)
 
@@ -110,6 +113,8 @@ class FittedModel:
             "log_likelihood": round(self.log_likelihood, 2),
             "converged": self.converged,
             "half_life_days": self.config.half_life_days,
+            "xg_weight": self.xg_weight,
+            "shot_conversion": self.conversion.to_dict() if self.conversion else None,
             "fitted_through": self.fitted_through.isoformat() if self.fitted_through else None,
             "teams": [
                 {
@@ -176,6 +181,16 @@ class DixonColesModel:
         away_idx = np.array([index[m.away] for m in usable])
         home_goals = np.array([m.home_goals for m in usable], dtype=float)
         away_goals = np.array([m.away_goals for m in usable], dtype=float)
+
+        # Attacking target: goals, a shots-based expected-goals proxy, or a
+        # blend. The tau correction below still keys off the *actual* scoreline,
+        # because it describes the dependence of real low scores.
+        xg_weight = float(min(max(cfg.xg_weight, 0.0), 1.0))
+        conversion = fit_conversion(usable) if xg_weight > 0 else None
+        if conversion is not None:
+            home_target, away_target = blended_targets(usable, conversion, xg_weight)
+        else:
+            home_target, away_target = home_goals, away_goals
         weights = _time_weights(np.array([m.date for m in usable]), as_of, cfg.half_life_days)
         weight_sum = float(weights.sum())
         if weight_sum <= 0:
@@ -220,7 +235,7 @@ class DixonColesModel:
             valid = tau > 1e-9
             tau_safe = np.where(valid, tau, 1e-9)
 
-            log_lik_terms = (-lam + home_goals * log_lam - mu + away_goals * log_mu
+            log_lik_terms = (-lam + home_target * log_lam - mu + away_target * log_mu
                              + np.log(tau_safe))
             mean_log_lik = float((weights * log_lik_terms).sum() / weight_sum)
             penalty = ridge * float((attack**2).sum() + (defence**2).sum()) / n_teams
@@ -241,8 +256,8 @@ class DixonColesModel:
 
             w = weights / weight_sum
             # d(loglik)/d(log lambda) = lambda * d/d lambda
-            d_log_lam = w * (-lam + home_goals + lam * inv_tau * d_tau_d_lam)
-            d_log_mu = w * (-mu + away_goals + mu * inv_tau * d_tau_d_mu)
+            d_log_lam = w * (-lam + home_target + lam * inv_tau * d_tau_d_lam)
+            d_log_mu = w * (-mu + away_target + mu * inv_tau * d_tau_d_mu)
             d_rho = float((w * inv_tau * d_tau_d_rho).sum())
 
             grad_attack = (np.bincount(home_idx, weights=d_log_lam, minlength=n_teams)
@@ -277,7 +292,7 @@ class DixonColesModel:
         attack, defence, gamma, rho = unpack(result.x)
         # Report the true log-likelihood (with factorial terms) for diagnostics.
         log_lik = -result.fun * weight_sum - float(
-            (weights * (gammaln(home_goals + 1) + gammaln(away_goals + 1))).sum()
+            (weights * (gammaln(home_target + 1) + gammaln(away_target + 1))).sum()
         )
 
         return FittedModel(
@@ -292,5 +307,7 @@ class DixonColesModel:
             effective_sample=weight_sum,
             log_likelihood=log_lik,
             converged=bool(result.success),
+            conversion=conversion,
+            xg_weight=xg_weight,
             fitted_through=as_of,
         )

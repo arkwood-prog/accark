@@ -4,6 +4,7 @@
     bettingedge recommend --league E0      today's card from live prices
     bettingedge backtest  --league E0      walk-forward test on real history
     bettingedge verify    --league E0      full verification ladder on real data
+    bettingedge scan                       compare leagues side by side
     bettingedge ratings   --league E0      current team strength table
     bettingedge serve                      web dashboard on localhost:8000
 """
@@ -39,6 +40,7 @@ from .data.footballdata import (
 )
 from .pipeline import Engine
 from .report import DISCLAIMER, render_markdown, render_slate
+from .scan import DEFAULT_LEAGUES, scan_leagues
 from .verify import sharp_only, verify
 
 
@@ -91,6 +93,9 @@ def _add_config_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--half-life", type=float,
                         help="time-decay half life in days (default: 180)")
     parser.add_argument("--max-legs", type=int, help="largest accumulator to build")
+    parser.add_argument("--xg-weight", type=float,
+                        help="how far to move team ratings from goals toward a "
+                             "shots-based expected-goals proxy (0-1, default 0.5)")
 
 
 def _config_from(args: argparse.Namespace) -> Config:
@@ -108,6 +113,8 @@ def _config_from(args: argparse.Namespace) -> Config:
         overrides["model"]["half_life_days"] = args.half_life
     if getattr(args, "max_legs", None) is not None:
         overrides["parlay"]["max_legs"] = args.max_legs
+    if getattr(args, "xg_weight", None) is not None:
+        overrides["model"]["xg_weight"] = args.xg_weight
     return Config.from_dict(overrides)
 
 
@@ -384,6 +391,32 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_scan(args: argparse.Namespace) -> int:
+    """Run the same walk-forward test across several divisions."""
+    leagues = ([code.strip().upper() for code in args.leagues.split(",")]
+               if args.leagues else list(DEFAULT_LEAGUES))
+    print(f"\nScanning {len(leagues)} league(s) over {args.seasons} seasons.")
+    print("Each one is loaded, fitted walk-forward and re-run without price "
+          "shopping, so this takes a few minutes.\n")
+    report = scan_leagues(
+        leagues=leagues,
+        seasons=args.seasons,
+        config=_config_from(args),
+        train_days=args.train_days,
+        refit_every=args.refit_every,
+        include_pessimistic=not args.skip_pessimistic,
+        offline=args.offline,
+        progress=(lambda line: print(f"  {line}")) if not args.quiet else None,
+    )
+    print()
+    print(report.render())
+    if args.json:
+        Path(args.json).write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+        print(f"\nWrote {args.json}")
+    print(f"\n{DISCLAIMER}")
+    return 0
+
+
 def cmd_capture(args: argparse.Namespace) -> int:
     """Save a provider's raw response so it can be replayed without network."""
     out = Path(args.out)
@@ -555,6 +588,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     leagues = subparsers.add_parser("leagues", help="list supported league codes")
     leagues.set_defaults(func=cmd_leagues)
+
+    scan = subparsers.add_parser(
+        "scan", help="compare model performance across several leagues")
+    scan.add_argument("--leagues", help="comma-separated league codes "
+                                        "(default: a broad sweep)")
+    scan.add_argument("--seasons", type=int, default=6)
+    scan.add_argument("--train-days", type=int, default=400)
+    scan.add_argument("--refit-every", type=int, default=21)
+    scan.add_argument("--skip-pessimistic", action="store_true")
+    scan.add_argument("--offline", action="store_true")
+    scan.add_argument("--json", help="write the comparison as JSON")
+    scan.add_argument("--quiet", action="store_true")
+    _add_config_arguments(scan)
+    scan.set_defaults(func=cmd_scan)
 
     capture = subparsers.add_parser(
         "capture",

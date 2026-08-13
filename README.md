@@ -61,6 +61,16 @@ time decay (default half-life 180 days) so last month counts for more than last
 year, ratings are mean-centred for identifiability, and an L2 penalty shrinks
 them toward league average so newly-promoted sides do not take extreme values.
 
+The attacking target is not raw goals. Goals are a noisy record of how a team
+played — twelve chances and one goal reads as one goal. Shots on target are
+about ten times more frequent and so a far steadier signal, so ratings are
+fitted on a blend of goals and a shots-based expected-goals proxy
+(`xg_weight`, default 0.5). Conversion rates are fitted per league from its own
+history rather than assumed, because lower divisions take worse shots. Swept on
+six Premier League seasons, 0.5 forecast better than either extreme: 1X2 log
+loss 0.9829, against 0.9877 for pure goals and 0.9887 for pure expected goals.
+Matches with no shot data fall back to goals automatically.
+
 The likelihood is optimised with an **analytic gradient**. That is not a
 micro-optimisation: a walk-forward backtest refits the model hundreds of times,
 and finite differences would make it unusable.
@@ -393,6 +403,7 @@ and maximum acca legs are all live controls — moving them refits and reprices.
 | `demo` | Full run on generated offline data |
 | `recommend` | Price the upcoming card and recommend bets |
 | `verify` | Five-stage verification ladder on real data |
+| `scan` | Compare model performance across several leagues |
 | `providers` | List live odds sources and how to set them up |
 | `capture` | Save a provider payload for replay on a machine with no network |
 | `backtest` | Walk-forward test on historical results |
@@ -448,7 +459,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-243 tests. The ones that matter most:
+263 tests. The ones that matter most:
 
 - the analytic gradient is verified against finite differences
 - the fitter recovers known parameters from a simulated league
@@ -468,6 +479,8 @@ pytest
   refuses ambiguous matches instead of guessing
 - a replayed capture reproduces exactly what the live client would have parsed,
   with no API key and no network
+- the shot-conversion fit recovers a known rate from generated data, and the
+  likelihood accepts the continuous expected-goals target
 
 ---
 
