@@ -86,6 +86,23 @@ class FittedModel:
     def ratings(self) -> list[TeamRating]:
         return sorted((self.rating(t) for t in self.teams), key=lambda r: -r.net)
 
+    @property
+    def effective_matches_per_team(self) -> float:
+        """Time-weighted matches behind the average team's rating.
+
+        The headline match count flatters an early-season fit: with a 180-day
+        half-life most of that window is the off-season, so the ratings rest on
+        far less than the raw number suggests. Below roughly 20 the ratings are
+        stale last-season values and the model will disagree with the market
+        loudly and wrongly.
+        """
+        n_teams = max(len(self.teams), 1)
+        return 2.0 * self.effective_sample / n_teams
+
+    @property
+    def thin_sample(self) -> bool:
+        return self.effective_matches_per_team < 20.0
+
     def data_confidence(self, home: str, away: str) -> float:
         """0-1 score for how much match data underpins this fixture."""
         need = max(1, self.config.min_matches_per_team)
@@ -110,6 +127,8 @@ class FittedModel:
             "rho": round(self.rho, 4),
             "n_matches": self.n_matches,
             "effective_sample": round(self.effective_sample, 1),
+            "effective_matches_per_team": round(self.effective_matches_per_team, 1),
+            "thin_sample": self.thin_sample,
             "log_likelihood": round(self.log_likelihood, 2),
             "converged": self.converged,
             "half_life_days": self.config.half_life_days,

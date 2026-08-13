@@ -459,7 +459,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-263 tests. The ones that matter most:
+266 tests. The ones that matter most:
 
 - the analytic gradient is verified against finite differences
 - the fitter recovers known parameters from a simulated league
@@ -481,6 +481,7 @@ pytest
   with no API key and no network
 - the shot-conversion fit recovers a known rate from generated data, and the
   likelihood accepts the continuous expected-goals target
+- a thin early-season sample is detected and surfaced rather than hidden
 
 ---
 

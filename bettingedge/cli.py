@@ -71,6 +71,8 @@ def _add_data_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--team-alias", action="append", metavar="PROVIDER=MODEL",
                         help="force a team name mapping, e.g. "
                              "--team-alias \"Manchester United=Man United\". Repeatable.")
+    parser.add_argument("--sport-key", help="override the provider's league identifier "
+                                            "(see `bettingedge providers --list-sports`)")
     parser.add_argument("--dump-raw", help="write the provider's raw payload here for "
                                            "debugging")
     parser.add_argument("--replay-raw", metavar="PATH",
@@ -168,10 +170,14 @@ def _load_fixtures(args: argparse.Namespace):
     else:
         info = PROVIDER_INFO[provider_name]
         print(f"Loading live prices from {info.title} ...")
+        extra = {}
+        if provider_name == "theoddsapi" and getattr(args, "sport_key", None):
+            extra["sport_key"] = args.sport_key
         provider = get_provider(
             provider_name,
             api_key=getattr(args, "api_key", None),
             dump_raw=getattr(args, "dump_raw", None),
+            **extra,
         )
         fixtures = provider.fixtures(args.league,
                                      days_ahead=getattr(args, "days_ahead", 7))
@@ -428,7 +434,10 @@ def cmd_capture(args: argparse.Namespace) -> int:
 
     info = PROVIDER_INFO[args.odds_provider]
     print(f"Capturing {args.league} prices from {info.title} ...")
-    provider = get_provider(args.odds_provider, api_key=args.api_key, dump_raw=out)
+    extra = {}
+    if args.odds_provider == "theoddsapi" and getattr(args, "sport_key", None):
+        extra["sport_key"] = args.sport_key
+    provider = get_provider(args.odds_provider, api_key=args.api_key, dump_raw=out, **extra)
     fixtures = provider.fixtures(args.league, days_ahead=args.days_ahead)
 
     print(f"\nWrote {out} ({out.stat().st_size / 1024:.0f} KB)\n")

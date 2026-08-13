@@ -59,6 +59,19 @@ def render_slate(slate: Slate, detail: bool = True, previews: bool = False) -> s
         "",
     ]
 
+    if model.thin_sample:
+        out += [
+            "!! THIN SAMPLE WARNING",
+            f"   Only {model.effective_matches_per_team:.0f} time-weighted matches sit "
+            f"behind the average team's rating.",
+            "   Early in a season the decay window is mostly off-season, so ratings are "
+            "stale",
+            "   last-season values. Expect the model to disagree with the market loudly "
+            "and to be",
+            "   wrong when it does. Every edge below should be read with that in mind.",
+            "",
+        ]
+
     portfolio = slate.portfolio
     out += [
         THIN,

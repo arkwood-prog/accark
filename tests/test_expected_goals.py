@@ -142,3 +142,41 @@ def test_scan_report_serialises():
     report = ScanReport(results=[LeagueResult("ZZ", "Nowhere", 0, error="no data")])
     payload = report.to_dict()
     assert payload["leagues"][0]["error"] == "no data"
+
+
+# ------------------------------------------------- thin-sample detection
+def test_thin_sample_is_flagged_when_the_decay_window_is_mostly_empty():
+    """The early-season case: plenty of matches on file, little recent signal."""
+    from bettingedge.data.schema import Match
+
+    start = date(2024, 1, 1)
+    # A full season, then a long gap — exactly what August looks like.
+    old = [Match(start + timedelta(days=i * 3), "X", f"T{i % 12}", f"T{(i + 5) % 12}",
+                 2, 1) for i in range(200)]
+    fitted = DixonColesModel(ModelConfig(half_life_days=180, max_history_days=0)).fit(
+        old, as_of=start + timedelta(days=1200))
+    assert fitted.thin_sample
+    assert fitted.effective_matches_per_team < 20
+
+
+def test_a_dense_recent_season_is_not_flagged_as_thin():
+    from bettingedge.data.schema import Match
+
+    start = date(2024, 1, 1)
+    dense = [Match(start + timedelta(days=i), "X", f"T{i % 10}", f"T{(i + 3) % 10}", 2, 1)
+             for i in range(400)]
+    fitted = DixonColesModel(ModelConfig(half_life_days=180)).fit(dense)
+    assert not fitted.thin_sample
+
+
+def test_thin_sample_reaches_the_report_and_the_model_dict():
+    from bettingedge.data.schema import Match
+
+    start = date(2024, 1, 1)
+    old = [Match(start + timedelta(days=i * 3), "X", f"T{i % 12}", f"T{(i + 5) % 12}",
+                 2, 1) for i in range(200)]
+    fitted = DixonColesModel(ModelConfig(half_life_days=180, max_history_days=0)).fit(
+        old, as_of=start + timedelta(days=1200))
+    payload = fitted.to_dict()
+    assert payload["thin_sample"] is True
+    assert payload["effective_matches_per_team"] < 20

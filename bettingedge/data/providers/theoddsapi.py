@@ -41,7 +41,6 @@ SPORT_KEYS: dict[str, str] = {
     "E1": "soccer_efl_champ",
     "E2": "soccer_england_league1",
     "E3": "soccer_england_league2",
-    "EC": "soccer_england_efl_cup",
     "SC0": "soccer_spl",
     "D1": "soccer_germany_bundesliga",
     "D2": "soccer_germany_bundesliga2",
@@ -68,7 +67,8 @@ class TheOddsAPI:
     name = "theoddsapi"
 
     def __init__(self, api_key: str | None = None, regions: str = "uk,eu",
-                 timeout: int = 25, dump_raw: str | Path | None = None):
+                 timeout: int = 25, dump_raw: str | Path | None = None,
+                 sport_key: str | None = None):
         # Resolved lazily so the parser can be used on a captured payload with
         # no key present — see providers/replay.py.
         self._api_key = api_key
@@ -76,6 +76,7 @@ class TheOddsAPI:
         self.regions = regions
         self.timeout = timeout
         self.dump_raw = Path(dump_raw) if dump_raw else None
+        self.sport_key = sport_key
         self.quota_remaining: str | None = None
 
     @property
@@ -92,12 +93,18 @@ class TheOddsAPI:
                             timeout=self.timeout)
 
     def _sport_key(self, league: str) -> str:
+        if self.sport_key:
+            return self.sport_key
         key = SPORT_KEYS.get(league.upper())
         if not key:
             raise ProviderError(
                 f"no The Odds API sport key is mapped for league {league!r}. "
-                f"Mapped leagues: {', '.join(sorted(SPORT_KEYS))}. "
-                "Run `bettingedge providers --list-sports` to see what your key covers."
+                f"Mapped leagues: {', '.join(sorted(SPORT_KEYS))}.\n"
+                "Not every division is carried — the English National League (EC) in "
+                "particular may not be.\n"
+                "Run `bettingedge providers --list-sports` to see exactly what your key "
+                "covers, then pass\nthe right one with --sport-key. The free "
+                "football-data.co.uk feed does carry EC."
             )
         return key
 
