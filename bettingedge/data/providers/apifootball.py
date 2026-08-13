@@ -66,12 +66,20 @@ class APIFootball:
 
     def __init__(self, api_key: str | None = None, use_rapidapi: bool = False,
                  timeout: int = 25, dump_raw: str | Path | None = None):
-        self.api_key = api_key_for(
-            ["API_FOOTBALL_KEY", "APIFOOTBALL_KEY", "RAPIDAPI_KEY"], api_key
-        )
+        # Resolved lazily so the parser works on a captured payload with no key.
+        self._api_key = api_key
+        self._resolved_key: str | None = None
         self.use_rapidapi = use_rapidapi
         self.timeout = timeout
         self.dump_raw = Path(dump_raw) if dump_raw else None
+
+    @property
+    def api_key(self) -> str:
+        if self._resolved_key is None:
+            self._resolved_key = api_key_for(
+                ["API_FOOTBALL_KEY", "APIFOOTBALL_KEY", "RAPIDAPI_KEY"], self._api_key
+            )
+        return self._resolved_key
 
     @property
     def _base(self) -> str:

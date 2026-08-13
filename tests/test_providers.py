@@ -326,11 +326,15 @@ def test_odds_api_explains_an_unmapped_league(odds_api):
         odds_api._sport_key("ZZ")
 
 
-def test_odds_api_needs_a_key(monkeypatch):
+def test_odds_api_demands_a_key_only_when_it_makes_a_request(monkeypatch):
+    """Constructing must work without a key so captured payloads can be replayed;
+    the key is required the moment a real request needs one."""
     monkeypatch.delenv("ODDS_API_KEY", raising=False)
     monkeypatch.delenv("THE_ODDS_API_KEY", raising=False)
+
+    client = TheOddsAPI()          # no key: fine, nothing has been requested
     with pytest.raises(ProviderError, match="no API key"):
-        TheOddsAPI()
+        _ = client.api_key
 
 
 # ------------------------------------------------------------ API-Football
@@ -419,3 +423,114 @@ def test_footballdata_is_not_a_live_provider():
     """It supplies history; it is not constructed through the live registry."""
     with pytest.raises(ProviderError):
         get_provider("footballdata")
+
+
+# ------------------------------------------------------------ capture/replay
+def _write_capture(tmp_path, payload):
+    import json
+    path = tmp_path / "capture.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _odds_api_payload():
+    soon = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    return [_odds_api_event(soon)]
+
+
+def test_replay_needs_no_api_key(tmp_path, monkeypatch):
+    """The whole point: it must work on a machine with no key and no network."""
+    monkeypatch.delenv("ODDS_API_KEY", raising=False)
+    monkeypatch.delenv("THE_ODDS_API_KEY", raising=False)
+    from bettingedge.data.providers import ReplayProvider
+
+    path = _write_capture(tmp_path, _odds_api_payload())
+    fixtures = ReplayProvider(path).fixtures("E0")
+    assert len(fixtures) == 1
+    assert fixtures[0].home == "Manchester United"
+
+
+def test_replay_reproduces_the_live_parse(tmp_path, odds_api):
+    """A replayed capture must give exactly what the live client would."""
+    from bettingedge.data.providers import ReplayProvider
+
+    payload = _odds_api_payload()
+    cutoff = datetime.now(timezone.utc) + timedelta(days=7)
+    live = odds_api._event_to_fixture(payload[0], "E0", cutoff)
+    replayed = ReplayProvider(_write_capture(tmp_path, payload)).fixtures("E0")[0]
+
+    assert replayed.odds == live.odds
+    assert replayed.sharp_odds == live.sharp_odds
+    assert (replayed.home, replayed.away) == (live.home, live.away)
+
+
+def test_replay_keeps_events_that_have_since_gone_stale(tmp_path):
+    """A capture is always in the past by the time it is replayed."""
+    from bettingedge.data.providers import ReplayProvider
+
+    old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    path = _write_capture(tmp_path, [_odds_api_event(old)])
+    assert len(ReplayProvider(path).fixtures("E0")) == 1
+
+
+def test_replay_detects_api_football_captures(tmp_path):
+    from bettingedge.data.providers import ReplayProvider, detect_shape
+
+    payload = {
+        "fixtures": [{
+            "fixture": {"id": 1, "date": "2026-08-15T14:00:00+00:00"},
+            "teams": {"home": {"name": "Manchester United"},
+                      "away": {"name": "Fulham"}},
+        }],
+        "odds": [{
+            "fixture": {"id": 1},
+            "bookmakers": [{"name": "Pinnacle", "bets": [
+                {"name": "Match Winner", "values": [
+                    {"value": "Home", "odd": "1.83"},
+                    {"value": "Draw", "odd": "3.80"},
+                    {"value": "Away", "odd": "4.60"},
+                ]},
+            ]}],
+        }],
+    }
+    assert detect_shape(payload) == "apifootball"
+    fixtures = ReplayProvider(_write_capture(tmp_path, payload)).fixtures("E0")
+    assert len(fixtures) == 1
+    assert fixtures[0].odds["1X2:H"] == 1.83
+
+
+def test_replay_explains_an_unrecognisable_payload(tmp_path):
+    from bettingedge.data.providers import ReplayProvider
+
+    with pytest.raises(ProviderError, match="could not tell which provider"):
+        ReplayProvider(_write_capture(tmp_path, {"something": "else"}))
+
+
+def test_replay_surfaces_a_captured_api_error(tmp_path):
+    from bettingedge.data.providers import ReplayProvider
+
+    with pytest.raises(ProviderError, match="API error"):
+        ReplayProvider(_write_capture(tmp_path, {"errors": {"token": "invalid"}}))
+
+
+def test_replay_reports_a_missing_file():
+    from bettingedge.data.providers import ReplayProvider
+
+    with pytest.raises(ProviderError, match="no captured payload"):
+        ReplayProvider("/no/such/capture.json")
+
+
+def test_capture_summary_names_the_markets_and_teams(tmp_path):
+    from bettingedge.data.providers import ReplayProvider, describe_capture
+
+    fixtures = ReplayProvider(_write_capture(tmp_path, _odds_api_payload())).fixtures("E0")
+    summary = describe_capture(fixtures)
+    assert "Manchester United" in summary       # provider's exact spelling
+    assert "1X2:H" in summary and "OU2.5:O" in summary
+    assert "book(s) per selection" in summary
+
+
+def test_capture_summary_explains_an_empty_result():
+    from bettingedge.data.providers import describe_capture
+
+    assert "No fixtures parsed" in describe_capture([])

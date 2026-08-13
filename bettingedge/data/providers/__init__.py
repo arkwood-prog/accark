@@ -15,6 +15,7 @@ from typing import Any
 
 from .apifootball import APIFootball
 from .base import BookQuote, OddsProvider, ProviderError, assemble_fixture, pick_sharp_book
+from .replay import ReplayProvider, describe_capture, detect_shape
 from .theoddsapi import TheOddsAPI
 
 
@@ -87,6 +88,9 @@ def get_provider(name: str, **kwargs: Any) -> OddsProvider:
 __all__ = [
     "APIFootball",
     "TheOddsAPI",
+    "ReplayProvider",
+    "describe_capture",
+    "detect_shape",
     "BookQuote",
     "OddsProvider",
     "ProviderError",

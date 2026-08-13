@@ -292,6 +292,29 @@ backtesting honest. Providers supply the upcoming card only.
 Adding another source means implementing one method (`fixtures()`) against the
 `OddsProvider` protocol in `data/providers/base.py`.
 
+### When the machine cannot reach the API
+
+Locked-down CI runners, corporate egress policies and hosted agent sandboxes
+often allow package registries and nothing else. Capture on a machine that has
+access, replay anywhere:
+
+```bash
+# where the API is reachable
+bettingedge capture --league E0 --odds-provider theoddsapi --out odds.json
+
+# anywhere, no network at all
+bettingedge recommend --league E0 --replay-raw odds.json
+```
+
+`capture` prints what the payload actually contains — which markets parsed, and
+the team names exactly as the provider spells them, which is what team matching
+has to cope with. The file holds the provider's untouched response and contains
+**no API key** (keys travel in the request, not the reply), so it is safe to
+commit or hand over for debugging.
+
+A capture is a snapshot: use it to verify parsing, team matching and pricing,
+not to place bets. Prices go stale within minutes.
+
 ### Team names — the silent killer
 
 Your odds source says "Manchester United". Your results source says "Man
@@ -371,6 +394,7 @@ and maximum acca legs are all live controls — moving them refits and reprices.
 | `recommend` | Price the upcoming card and recommend bets |
 | `verify` | Five-stage verification ladder on real data |
 | `providers` | List live odds sources and how to set them up |
+| `capture` | Save a provider payload for replay on a machine with no network |
 | `backtest` | Walk-forward test on historical results |
 | `ratings` | Current team strength table |
 | `serve` | Web dashboard |
@@ -424,7 +448,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-234 tests. The ones that matter most:
+243 tests. The ones that matter most:
 
 - the analytic gradient is verified against finite differences
 - the fitter recovers known parameters from a simulated league
@@ -442,6 +466,8 @@ pytest
   than position, and malformed events are skipped rather than crashing
 - team matching never confuses Manchester United with Manchester City, and
   refuses ambiguous matches instead of guessing
+- a replayed capture reproduces exactly what the live client would have parsed,
+  with no API key and no network
 
 ---
 

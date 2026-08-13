@@ -20,7 +20,14 @@ from .backtest.engine import run_backtest
 from .config import Config
 from .data import synthetic
 from .data.csvsource import load_fixtures_csv, load_results_csv
-from .data.providers import PROVIDER_INFO, ProviderError, available_providers, get_provider
+from .data.providers import (
+    PROVIDER_INFO,
+    ProviderError,
+    ReplayProvider,
+    available_providers,
+    describe_capture,
+    get_provider,
+)
 from .data.teams import parse_alias_arguments, reconcile_fixtures
 from .data.footballdata import (
     DEFAULT_PRICE_MODE,
@@ -64,6 +71,9 @@ def _add_data_arguments(parser: argparse.ArgumentParser) -> None:
                              "--team-alias \"Manchester United=Man United\". Repeatable.")
     parser.add_argument("--dump-raw", help="write the provider's raw payload here for "
                                            "debugging")
+    parser.add_argument("--replay-raw", metavar="PATH",
+                        help="read prices from a payload captured earlier by "
+                             "`bettingedge capture`, making no network calls at all")
     parser.add_argument("--price-mode", default=DEFAULT_PRICE_MODE, choices=list(PRICE_MODES),
                         help="which price snapshot to read: 'best-closing' (default, best "
                              "price across books at the close), 'early' (pre-closing price "
@@ -133,6 +143,15 @@ def _load_fixtures(args: argparse.Namespace):
         return load_fixtures_csv(args.fixtures_csv, default_league=args.league)
     if getattr(args, "synthetic", False):
         _, fixtures = synthetic.generate(seasons=max(2, args.seasons))
+        return fixtures
+
+    if getattr(args, "replay_raw", None):
+        print(f"Replaying captured prices from {args.replay_raw} (no network) ...")
+        fixtures = ReplayProvider(args.replay_raw).fixtures(
+            args.league, days_ahead=getattr(args, "days_ahead", 7))
+        print(f"  {len(fixtures)} fixtures with prices")
+        print("  NOTE: a capture is a snapshot. Use it to check the pipeline, "
+              "not to place bets.")
         return fixtures
 
     provider_name = getattr(args, "odds_provider", "footballdata")
@@ -365,6 +384,36 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_capture(args: argparse.Namespace) -> int:
+    """Save a provider's raw response so it can be replayed without network."""
+    out = Path(args.out)
+    if args.odds_provider == "footballdata":
+        print("Capture is for live API providers. football-data.co.uk is already "
+              "cached on disk — use --offline to work from that cache.",
+              file=sys.stderr)
+        return 1
+
+    info = PROVIDER_INFO[args.odds_provider]
+    print(f"Capturing {args.league} prices from {info.title} ...")
+    provider = get_provider(args.odds_provider, api_key=args.api_key, dump_raw=out)
+    fixtures = provider.fixtures(args.league, days_ahead=args.days_ahead)
+
+    print(f"\nWrote {out} ({out.stat().st_size / 1024:.0f} KB)\n")
+    print(describe_capture(fixtures))
+    print(f"""
+The file holds the provider's untouched response. It contains no API key —
+keys travel in the request, not the reply — so it is safe to commit or hand to
+someone else for debugging. Have a look before sharing anyway.
+
+Replay it anywhere, with no network:
+
+    bettingedge recommend --league {args.league} --replay-raw {out}
+
+A capture is a snapshot: use it to check parsing, team matching and pricing,
+not to place bets. Prices go stale within minutes.""")
+    return 0
+
+
 def cmd_providers(args: argparse.Namespace) -> int:
     if args.list_sports:
         provider = get_provider("theoddsapi", api_key=args.api_key)
@@ -506,6 +555,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     leagues = subparsers.add_parser("leagues", help="list supported league codes")
     leagues.set_defaults(func=cmd_leagues)
+
+    capture = subparsers.add_parser(
+        "capture",
+        help="save a provider's raw response so it can be replayed with no network")
+    _add_data_arguments(capture)
+    capture.add_argument("--out", default="odds-capture.json",
+                         help="where to write the payload (default: odds-capture.json)")
+    capture.set_defaults(func=cmd_capture)
 
     providers = subparsers.add_parser(
         "providers", help="list live odds sources and how to set them up")

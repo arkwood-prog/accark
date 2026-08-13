@@ -69,11 +69,21 @@ class TheOddsAPI:
 
     def __init__(self, api_key: str | None = None, regions: str = "uk,eu",
                  timeout: int = 25, dump_raw: str | Path | None = None):
-        self.api_key = api_key_for(["ODDS_API_KEY", "THE_ODDS_API_KEY"], api_key)
+        # Resolved lazily so the parser can be used on a captured payload with
+        # no key present — see providers/replay.py.
+        self._api_key = api_key
+        self._resolved_key: str | None = None
         self.regions = regions
         self.timeout = timeout
         self.dump_raw = Path(dump_raw) if dump_raw else None
         self.quota_remaining: str | None = None
+
+    @property
+    def api_key(self) -> str:
+        if self._resolved_key is None:
+            self._resolved_key = api_key_for(["ODDS_API_KEY", "THE_ODDS_API_KEY"],
+                                             self._api_key)
+        return self._resolved_key
 
     # -- helpers --------------------------------------------------------
     def sports(self) -> list[dict]:
