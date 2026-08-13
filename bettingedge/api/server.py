@@ -70,6 +70,73 @@ def _config_from_query(
     })
 
 
+def lan_address() -> str | None:
+    """This machine's address on the local network.
+
+    Opens a UDP socket toward a public address and asks the OS which local
+    interface it would use. Nothing is actually sent, and it works offline —
+    it is just the reliable way to learn which of several interfaces is the
+    one a phone on the same wifi can reach.
+    """
+    import ipaddress
+    import socket
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # No packet is sent; this only asks the routing table which local
+        # interface would be used to reach the internet.
+        probe.connect(("8.8.8.8", 80))
+        address = probe.getsockname()[0]
+    except Exception:
+        return None
+    finally:
+        probe.close()
+    if not address:
+        return None
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return None
+    # Only the actual home-network ranges. Python's is_private is broader than
+    # this — it also covers documentation and test ranges like 192.0.2.0/24,
+    # which a container can hand back and which no phone could ever reach.
+    lan_ranges = (
+        ipaddress.ip_network("10.0.0.0/8"),
+        ipaddress.ip_network("172.16.0.0/12"),
+        ipaddress.ip_network("192.168.0.0/16"),
+    )
+    if not any(parsed in network for network in lan_ranges):
+        return None
+    return address
+
+
+def qr_code(text: str) -> str | None:
+    """A scannable terminal QR for the URL, when the optional library is there."""
+    try:
+        import qrcode
+    except ImportError:
+        return None
+    try:
+        code = qrcode.QRCode(border=1)
+        code.add_data(text)
+        code.make(fit=True)
+        matrix = code.get_matrix()
+    except Exception:
+        return None
+
+    # Two rows per line using half-block characters, so it stays square.
+    lines = []
+    for top in range(0, len(matrix), 2):
+        row = ""
+        for column in range(len(matrix[top])):
+            upper = matrix[top][column]
+            lower = matrix[top + 1][column] if top + 1 < len(matrix) else False
+            row += {(True, True): "\u2588", (True, False): "\u2580",
+                    (False, True): "\u2584", (False, False): " "}[(upper, lower)]
+        lines.append(row)
+    return "\n".join(lines)
+
+
 ACCESS_TOKEN_ENV = "BETTINGEDGE_TOKEN"
 _COOKIE = "bettingedge_token"
 
@@ -248,13 +315,38 @@ def run_server(host: str = "127.0.0.1", port: int = 8000, league: str = "E0",
         )
     app = create_app(STORE, token=token)
     active_token = token if token is not None else os.environ.get(ACCESS_TOKEN_ENV)
-    if active_token:
-        print(f"\nDashboard: http://{host}:{port}/?token={active_token}")
-        print("(the token is remembered in a cookie after the first load)\n")
+    suffix = f"/?token={active_token}" if active_token else ""
+
+    print()
+    if host == "0.0.0.0":
+        address = lan_address()
+        if address:
+            url = f"http://{address}:{port}{suffix}"
+            print("=" * 62)
+            print("  OPEN THIS ON YOUR PHONE (same wifi):")
+            print(f"  {url}")
+            print("=" * 62)
+            code = qr_code(url)
+            if code:
+                print()
+                print(code)
+            else:
+                print("  (pip install qrcode for a scannable code here)")
+            print()
+            print(f"  On this machine: http://127.0.0.1:{port}{suffix}")
+            print("  Phone can't reach it? Your firewall is probably blocking the port,")
+            print("  and both devices must be on the same network — not one on mobile data.")
+        else:
+            print(f"Dashboard: http://127.0.0.1:{port}{suffix}")
+            print("Could not work out this machine's network address; find it with "
+                  "`ipconfig` or `ifconfig`.")
+        if not active_token:
+            print()
+            print(f"  Note: no access token set, so anyone on this network can open it.")
+            print(f"  Fine at home. On shared or public wifi, set {ACCESS_TOKEN_ENV}.")
     else:
-        print(f"\nDashboard: http://{host}:{port}")
-        if host not in ("127.0.0.1", "localhost"):
-            print(f"WARNING: bound to {host} with no access token. Anyone who can reach "
-                  f"this\n         port can use it. Set {ACCESS_TOKEN_ENV} to require "
-                  "one.\n")
+        print(f"Dashboard: http://{host}:{port}{suffix}")
+        if active_token:
+            print("(the token is remembered in a cookie after the first load)")
+    print()
     uvicorn.run(app, host=host, port=port, log_level="warning")

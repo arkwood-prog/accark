@@ -18,6 +18,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
+# Prints a scannable QR of the LAN URL when you run `bettingedge serve --lan`.
+qr = ["qrcode>=7.0"]
 
 [project.scripts]
 bettingedge = "bettingedge.cli:main"

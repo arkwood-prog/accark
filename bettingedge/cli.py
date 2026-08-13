@@ -407,7 +407,8 @@ def cmd_ratings(args: argparse.Namespace) -> int:
 def cmd_serve(args: argparse.Namespace) -> int:
     from .api.server import run_server
 
-    run_server(host=args.host, port=args.port, league=args.league, seasons=args.seasons,
+    host = "0.0.0.0" if getattr(args, "lan", False) else args.host
+    run_server(host=host, port=args.port, league=args.league, seasons=args.seasons,
                offline=args.offline, use_synthetic=args.synthetic,
                config=_config_from(args), price_mode=args.price_mode,
                token=getattr(args, "token", None))
@@ -610,6 +611,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_config_arguments(serve)
     serve.add_argument("--host", default="127.0.0.1",
                        help="use 0.0.0.0 to reach it from your phone on the same network")
+    serve.add_argument("--lan", action="store_true",
+                       help="serve to your local network and print the URL (and a QR "
+                            "code) to open on your phone")
     serve.add_argument("--port", type=int, default=8000)
     serve.add_argument("--token", help="require this token to access the dashboard "
                                        "(or set BETTINGEDGE_TOKEN)")

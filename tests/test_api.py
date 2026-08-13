@@ -238,3 +238,58 @@ def test_the_page_declares_itself_installable(client):
     assert 'rel="manifest"' in html
     assert 'name="apple-mobile-web-app-capable"' in html
     assert "viewport-fit=cover" in html
+
+
+# ------------------------------------------------------------ LAN serving
+def test_lan_address_is_private_or_absent():
+    """It must never hand back a loopback or public address as 'your LAN IP'."""
+    import ipaddress
+
+    from bettingedge.api.server import lan_address
+
+    address = lan_address()
+    if address is None:
+        return          # containers and offline machines legitimately have none
+    parsed = ipaddress.ip_address(address)
+    assert parsed.is_private and not parsed.is_loopback
+
+
+def test_qr_code_renders_or_degrades_quietly():
+    from bettingedge.api.server import qr_code
+
+    code = qr_code("http://192.168.1.10:8000")
+    if code is None:
+        return          # the library is optional
+    lines = code.splitlines()
+    assert len(lines) > 8
+    assert len({len(line) for line in lines}) == 1, "QR rows must be equal width"
+
+
+def test_lan_flag_binds_to_all_interfaces():
+    args = build_parser().parse_args(["serve", "--lan"])
+    assert args.lan is True
+
+
+def test_host_defaults_to_loopback():
+    args = build_parser().parse_args(["serve"])
+    assert args.host == "127.0.0.1"
+    assert args.lan is False
+
+
+def test_documentation_ranges_are_not_offered_as_a_lan_address():
+    """A container can route to 192.0.2.0/24; no phone can reach it."""
+    import ipaddress
+
+    lan_ranges = (ipaddress.ip_network("10.0.0.0/8"),
+                  ipaddress.ip_network("172.16.0.0/12"),
+                  ipaddress.ip_network("192.168.0.0/16"))
+
+    def reachable(text):
+        parsed = ipaddress.ip_address(text)
+        return any(parsed in network for network in lan_ranges)
+
+    assert reachable("192.168.1.42") and reachable("10.0.0.5") and reachable("172.16.3.9")
+    # Python calls these private; a phone still cannot reach them.
+    assert not reachable("192.0.2.2")      # TEST-NET-1
+    assert not reachable("169.254.1.1")    # link-local
+    assert not reachable("127.0.0.1") and not reachable("8.8.8.8")

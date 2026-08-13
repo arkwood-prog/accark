@@ -429,13 +429,37 @@ The dashboard is built for a phone as well as a desktop: the tab strip scrolls,
 slip metrics reflow to a grid, and wide tables scroll inside their own box so
 the page never moves sideways.
 
-**Same network, no deployment.** Bind to all interfaces and open your machine's
-LAN address on the phone:
+**Same network, no deployment.** One flag — it finds your machine's address and
+prints the URL to open, with a QR code if `qrcode` is installed:
 
 ```bash
-bettingedge serve --league EC --host 0.0.0.0 --port 8000
-# then http://192.168.1.x:8000 on the phone
+pip install -e ".[qr]"                       # optional, for the QR code
+bettingedge serve --league EC --seasons 16 --lan
 ```
+
+```
+==============================================================
+  OPEN THIS ON YOUR PHONE (same wifi):
+  http://192.168.1.42:8000
+==============================================================
+
+ ▄▄▄▄▄▄▄ ▄▄ ▄  ▄▄▄ ▄▄▄▄▄▄▄
+ █ ▄▄▄ █  ▀▄▀ ▀▀▄█ █ ▄▄▄ █
+ █ ███ █ ██▄▀█▄▄█  █ ███ █
+ █▄▄▄▄▄█ █▀█ █▀█ ▄ █▄▄▄▄▄█
+ ...
+```
+
+Scan it, or type the address. Three things to know:
+
+- **Your machine has to stay awake and running.** Close the laptop and the app
+  goes with it. That is the trade-off against deploying.
+- **The first run downloads history**, so give it a minute. It is cached after.
+- **A firewall prompt is normal.** macOS and Windows will ask whether to allow
+  incoming connections on that port — say yes, for private networks.
+
+If it will not connect, it is almost always one of: the firewall said no, or
+the phone is on mobile data rather than the wifi.
 
 **A real URL.** There is a `Dockerfile` and a `fly.toml`:
 
@@ -529,7 +553,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-288 tests. The ones that matter most:
+293 tests. The ones that matter most:
 
 - the analytic gradient is verified against finite differences
 - the fitter recovers known parameters from a simulated league
@@ -556,6 +580,8 @@ pytest
 - a multi-league card fits each division separately but stakes as one portfolio
 - a token-protected instance refuses every route without the token, and accepts
   it by query string, header or cookie
+- LAN detection only ever offers a genuine home-network address, never a
+  loopback, public or documentation-range one
 
 ---
 
