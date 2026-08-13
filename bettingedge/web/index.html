@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>bettingedge — data-driven football betting</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>⚽</text></svg>">
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <div>
+      <div class="logo">betting<span>edge</span></div>
+      <div class="tagline">Dixon-Coles goal modelling · market devigging · Kelly staking</div>
+    </div>
+    <div class="status" id="status">connecting…</div>
+  </div>
+</header>
+
+<div class="wrap">
+  <nav class="tabs">
+    <button class="tab active" data-tab="bets">Recommendations</button>
+    <button class="tab" data-tab="fixtures">Fixture analysis</button>
+    <button class="tab" data-tab="model">Model &amp; ratings</button>
+    <button class="tab" data-tab="backtest">Backtest</button>
+    <button class="tab" data-tab="method">Method</button>
+  </nav>
+
+  <section class="controls" id="controls">
+    <div class="control">
+      <label for="bankroll">Bankroll</label>
+      <input type="number" id="bankroll" value="1000" min="1" step="50">
+      <div class="hint">Stakes are sized as a fraction of this.</div>
+    </div>
+    <div class="control">
+      <label for="kelly">Kelly fraction <span class="value" id="kelly-v">0.25</span></label>
+      <input type="range" id="kelly" min="0.05" max="1" step="0.05" value="0.25">
+      <div class="hint">Lower = safer. Full Kelly assumes perfect probabilities.</div>
+    </div>
+    <div class="control">
+      <label for="minedge">Min edge <span class="value" id="minedge-v">3.0%</span></label>
+      <input type="range" id="minedge" min="0" max="0.15" step="0.005" value="0.03">
+      <div class="hint">Expected value a single must clear to qualify.</div>
+    </div>
+    <div class="control">
+      <label for="weight">Model weight <span class="value" id="weight-v">35%</span></label>
+      <input type="range" id="weight" min="0" max="1" step="0.05" value="0.35">
+      <div class="hint">0% trusts the market entirely, 100% ignores it.</div>
+    </div>
+    <div class="control">
+      <label for="halflife">Form half-life <span class="value" id="halflife-v">180d</span></label>
+      <input type="range" id="halflife" min="30" max="540" step="10" value="180">
+      <div class="hint">How fast old results stop counting.</div>
+    </div>
+    <div class="control">
+      <label for="maxlegs">Max acca legs <span class="value" id="maxlegs-v">5</span></label>
+      <input type="range" id="maxlegs" min="2" max="8" step="1" value="5">
+      <div class="hint">Longest accumulator the engine will build.</div>
+    </div>
+  </section>
+
+  <main>
+    <div id="tab-bets"></div>
+    <div id="tab-fixtures" class="hidden"></div>
+    <div id="tab-model" class="hidden"></div>
+    <div id="tab-backtest" class="hidden"></div>
+
+    <div id="tab-method" class="hidden">
+      <h2 class="section">How a price is made</h2>
+      <p class="section-note">Every number on this page comes from the chain below. No step
+        is a black box, and each one can be inspected in the other tabs.</p>
+
+      <div class="table-wrap" style="padding:18px">
+        <ol style="line-height:1.85; padding-left:20px; margin:0; max-width:80ch">
+          <li><b>Fit the goal model.</b> A Dixon-Coles bivariate Poisson is fitted by maximum
+            likelihood to every result in the history window. Each team gets an attack and a
+            defence rating; the league gets a home-advantage term and a low-score correlation
+            term (ρ) that fixes the well-known Poisson misfit on 0-0, 1-0, 0-1 and 1-1.
+            Matches are weighted by an exponential time decay, so last month counts for more
+            than last year.</li>
+          <li><b>Build a score matrix.</b> For each fixture the model produces the full joint
+            distribution over scorelines — the probability of every 0-0, 2-1, 3-2 and so on.</li>
+          <li><b>Derive every market from that one object.</b> Match result, double chance,
+            over/under and both-teams-to-score are all just sums over regions of the same
+            matrix, so they can never contradict each other.</li>
+          <li><b>Strip the bookmaker's margin.</b> Prices imply probabilities summing to more
+            than 100%. Shin's method removes that overround while accounting for the
+            favourite-longshot bias, giving the market's honest opinion.</li>
+          <li><b>Blend model with market.</b> The two opinions are averaged in logit space.
+            Closing prices are hard to beat, so the default leans on the market and treats the
+            model as a tilt — the "model weight" slider controls exactly how much.</li>
+          <li><b>Re-anchor the score matrix.</b> The blended probabilities are pushed back into
+            the joint distribution by iterative proportional fitting, so correct scores and
+            same-game combinations inherit the market-anchored view.</li>
+          <li><b>Measure the edge.</b> Expected value is <code>p × odds − 1</code> against the
+            best price available. Only selections clearing the threshold survive.</li>
+          <li><b>Build the slips.</b> Singles, then doubles, trebles and accumulators from
+            different matches. Same-match legs are priced from the joint distribution instead
+            of being multiplied, because they are correlated.</li>
+          <li><b>Size the bets.</b> Fractional Kelly with per-bet caps and a slate-wide
+            exposure ceiling, since a Saturday card does not settle one bet at a time.</li>
+        </ol>
+      </div>
+
+      <h2 class="section">What would make this wrong</h2>
+      <p class="section-note">Stated plainly, because a model that hides its failure modes is
+        a liability.</p>
+      <div class="table-wrap" style="padding:18px">
+        <ul style="line-height:1.8; padding-left:20px; margin:0; max-width:80ch; color:var(--muted)">
+          <li>Goals-only modelling knows nothing about injuries, suspensions, rotation before a
+            cup tie, or a manager sacked on Thursday. The market knows all of it.</li>
+          <li>A price you saw is not a price you can get. Edges built on the best quote across
+            many books shrink or vanish at the book you actually hold an account with.</li>
+          <li>Backtest ROI on a few hundred bets is noise. Closing-line value and log-loss
+            against the market are the honest tests, which is why they are reported.</li>
+          <li>Accumulators multiply the bookmaker's margin as well as the odds. They are in
+            here because they were asked for and because the maths is worth showing — they are
+            not where the edge is.</li>
+        </ul>
+      </div>
+    </div>
+  </main>
+
+  <div class="disclaimer" id="disclaimer"></div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
