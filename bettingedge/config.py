@@ -84,6 +84,23 @@ class SelectionConfig:
     # Cap on how many singles are surfaced per matchday.
     max_singles: int = 25
 
+    # Floor on the 0-100 confidence score. 0 surfaces everything that clears
+    # the edge test and lets you judge; raise it to see only well-supported
+    # bets.
+    min_confidence: float = 0.0
+
+    # Applied instead when the model reports a thin sample — early season, when
+    # the decay window is mostly off-season and ratings are stale last-season
+    # values. That is exactly when the model produces its largest and least
+    # trustworthy disagreements with the market, so the bar goes up on its own
+    # rather than relying on the reader to remember.
+    #
+    # 34 is the boundary of the "Low" tier rather than an arbitrary number: on
+    # a thin sample the bottom tier is where the implausible double-digit edges
+    # cluster, but cutting higher empties the card entirely and tells you
+    # nothing. This keeps the ranked read and removes the noise.
+    thin_sample_min_confidence: float = 34.0
+
     # Refuse to price a fixture when the model has never seen one of the teams.
     # Without this an unrecognised name is silently treated as a league-average
     # side and the fixture still produces confident-looking bets — the single

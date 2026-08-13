@@ -215,9 +215,16 @@ def build_candidates(
     quotes: dict[str, MarketQuote],
     config: Config,
     data_confidence: float,
+    min_confidence: float | None = None,
 ) -> list[Candidate]:
-    """Every selection on this fixture that clears the selection filters."""
+    """Every selection on this fixture that clears the selection filters.
+
+    ``min_confidence`` overrides the configured floor, which the pipeline uses
+    to raise the bar automatically when the model is working from a thin
+    sample.
+    """
     sel_cfg = config.selection
+    floor = sel_cfg.min_confidence if min_confidence is None else min_confidence
     candidates: list[Candidate] = []
 
     for selection_id, quote in quotes.items():
@@ -248,6 +255,8 @@ def build_candidates(
             model_probability=model_probs.get(selection_id, probability),
             market_probability=quote.fair_probability,
         )
+        if confidence < floor:
+            continue
         candidates.append(
             Candidate(
                 fixture_key=fixture.key,

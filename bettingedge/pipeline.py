@@ -40,7 +40,7 @@ class Slate:
     """A complete set of recommendations for one matchday."""
 
     generated_at: datetime
-    model: FittedModel
+    model: FittedModel                      # primary model (first league)
     contexts: dict[str, FixtureContext]
     singles: list[Slip]
     multis: list[Slip]
@@ -48,6 +48,9 @@ class Slate:
     portfolio: Portfolio
     config: Config
     skipped: list[dict] = field(default_factory=list)
+    # One fitted model per league when the card spans several divisions.
+    # Ratings are only comparable within a division, so each gets its own fit.
+    models: dict[str, FittedModel] = field(default_factory=dict)
 
     @property
     def all_slips(self) -> list[Slip]:
@@ -57,6 +60,7 @@ class Slate:
         payload = {
             "generated_at": self.generated_at.isoformat(timespec="seconds"),
             "model": self.model.to_dict(),
+            "models": {code: m.to_dict() for code, m in self.models.items()},
             "portfolio": self.portfolio.to_dict(),
             "singles": [slip.to_dict() for slip in self.singles],
             "multis": [slip.to_dict() for slip in self.multis],
@@ -126,50 +130,92 @@ class Engine:
         as_of: date | None = None,
         model: FittedModel | None = None,
     ) -> Slate:
+        """Price one league's card."""
+        return self.build_multi_slate(
+            [(matches, fixtures)], as_of=as_of,
+            models=[model] if model is not None else None,
+        )
+
+    def build_multi_slate(
+        self,
+        groups: Sequence[tuple[Sequence[Match], Sequence[Fixture]]],
+        as_of: date | None = None,
+        models: Sequence[FittedModel] | None = None,
+    ) -> Slate:
+        """Price several leagues into one card.
+
+        Each division gets its own fit — attack and defence ratings are only
+        meaningful relative to the league they were estimated in, and a
+        Championship +0.3 is not a Premier League +0.3. Combination bets and
+        staking then run across the whole card, since legs in different
+        matches are independent regardless of which league they are in.
+        """
         cfg = self.config
-        model = model or self.fit(matches, as_of=as_of)
 
         contexts: dict[str, FixtureContext] = {}
         candidates: list[Candidate] = []
         matrices: dict[str, np.ndarray] = {}
         skipped: list[dict] = []
+        fitted: dict[str, FittedModel] = {}
+        primary: FittedModel | None = None
 
-        for fixture in fixtures:
-            if not fixture.odds:
-                skipped.append({"fixture": f"{fixture.home} v {fixture.away}",
-                                "reason": "no odds available"})
+        for index, (matches, fixtures) in enumerate(groups):
+            if not matches:
                 continue
-            if cfg.selection.require_known_teams:
-                unknown = [team for team in (fixture.home, fixture.away)
-                           if not model.knows(team)]
-                if unknown:
-                    # Pricing this would use league-average ratings and look
-                    # exactly as confident as a real read. Usually a team-name
-                    # mismatch between the odds source and the results source.
-                    skipped.append({
-                        "fixture": f"{fixture.home} v {fixture.away}",
-                        "reason": f"model has never seen {', '.join(unknown)} — "
-                                  "check team name matching between your odds and "
-                                  "results sources",
-                    })
+            model = (models[index] if models and index < len(models) and models[index]
+                     else self.fit(matches, as_of=as_of))
+            league = fixtures[0].league if fixtures else (matches[0].league or f"g{index}")
+            fitted[league] = model
+            if primary is None:
+                primary = model
+
+            # A thin sample is exactly when the model produces its largest and
+            # least reliable disagreements, so the bar rises automatically.
+            floor = (max(cfg.selection.min_confidence,
+                         cfg.selection.thin_sample_min_confidence)
+                     if model.thin_sample else cfg.selection.min_confidence)
+
+            for fixture in fixtures:
+                if not fixture.odds:
+                    skipped.append({"fixture": f"{fixture.home} v {fixture.away}",
+                                    "reason": "no odds available"})
                     continue
-            context = self.context_for(fixture, model, matches)
-            if not context.quotes:
-                skipped.append({"fixture": f"{fixture.home} v {fixture.away}",
-                                "reason": "no complete market could be devigged"})
-                continue
-            contexts[fixture.key] = context
-            matrices[fixture.key] = context.matrix
-            candidates.extend(
-                build_candidates(
-                    fixture=fixture,
-                    blended_probs=context.blended_probs,
-                    model_probs=context.model_probs,
-                    quotes=context.quotes,
-                    config=cfg,
-                    data_confidence=context.data_confidence,
+                if cfg.selection.require_known_teams:
+                    unknown = [team for team in (fixture.home, fixture.away)
+                               if not model.knows(team)]
+                    if unknown:
+                        # Pricing this would use league-average ratings and look
+                        # exactly as confident as a real read. Usually a team-name
+                        # mismatch between the odds source and the results source.
+                        skipped.append({
+                            "fixture": f"{fixture.home} v {fixture.away}",
+                            "reason": f"model has never seen {', '.join(unknown)} — "
+                                      "check team name matching between your odds and "
+                                      "results sources",
+                        })
+                        continue
+                context = self.context_for(fixture, model, matches)
+                if not context.quotes:
+                    skipped.append({"fixture": f"{fixture.home} v {fixture.away}",
+                                    "reason": "no complete market could be devigged"})
+                    continue
+                contexts[fixture.key] = context
+                matrices[fixture.key] = context.matrix
+                candidates.extend(
+                    build_candidates(
+                        fixture=fixture,
+                        blended_probs=context.blended_probs,
+                        model_probs=context.model_probs,
+                        quotes=context.quotes,
+                        config=cfg,
+                        data_confidence=context.data_confidence,
+                        min_confidence=floor,
+                    )
                 )
-            )
+
+        if primary is None:
+            raise ValueError("no league supplied any match history to fit on")
+        model = primary
 
         candidates.sort(key=lambda c: (-c.confidence, -c.edge))
         shortlist = candidates[: cfg.selection.max_singles]
@@ -209,6 +255,7 @@ class Engine:
         return Slate(
             generated_at=datetime.now(),
             model=model,
+            models=fitted,
             contexts=contexts,
             singles=singles,
             multis=multis,

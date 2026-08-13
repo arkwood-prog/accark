@@ -49,8 +49,9 @@ from .verify import sharp_only, verify
 # --------------------------------------------------------------------------
 def _add_data_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--league", default="E0",
-                        help="football-data.co.uk league code (default: E0, "
-                             "England Premier League). See --list-leagues.")
+                        help="football-data.co.uk league code, or several separated by "
+                             "commas (e.g. E0,E1,EC). Each division is fitted separately; "
+                             "the card is combined. See `bettingedge leagues`.")
     parser.add_argument("--seasons", type=int, default=4,
                         help="how many recent seasons of history to fit on (default: 4)")
     parser.add_argument("--results-csv", help="use your own results CSV instead of downloading")
@@ -95,6 +96,9 @@ def _add_config_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--half-life", type=float,
                         help="time-decay half life in days (default: 180)")
     parser.add_argument("--max-legs", type=int, help="largest accumulator to build")
+    parser.add_argument("--min-confidence", type=float,
+                        help="drop bets scoring below this out of 100. Raised "
+                             "automatically when the model is on a thin sample.")
     parser.add_argument("--xg-weight", type=float,
                         help="how far to move team ratings from goals toward a "
                              "shots-based expected-goals proxy (0-1, default 0.5)")
@@ -117,7 +121,14 @@ def _config_from(args: argparse.Namespace) -> Config:
         overrides["parlay"]["max_legs"] = args.max_legs
     if getattr(args, "xg_weight", None) is not None:
         overrides["model"]["xg_weight"] = args.xg_weight
+    if getattr(args, "min_confidence", None) is not None:
+        overrides["selection"]["min_confidence"] = args.min_confidence
     return Config.from_dict(overrides)
+
+
+def _leagues(args: argparse.Namespace) -> list[str]:
+    raw = getattr(args, "league", "E0") or "E0"
+    return [code.strip().upper() for code in raw.split(",") if code.strip()]
 
 
 def _source(args: argparse.Namespace) -> FootballDataUK:
@@ -223,29 +234,34 @@ def cmd_demo(args: argparse.Namespace) -> int:
 
 
 def cmd_recommend(args: argparse.Namespace) -> int:
-    matches = _load_history(args)
-    if not matches:
-        print("No history loaded — cannot fit a model.", file=sys.stderr)
-        return 1
-    fixtures = _load_fixtures(args)
-    if not fixtures:
-        print("\nNo upcoming fixtures with prices were found.\n"
+    codes = _leagues(args)
+    groups = []
+    for code in codes:
+        per_league = argparse.Namespace(**{**vars(args), "league": code})
+        matches = _load_history(per_league)
+        if not matches:
+            print(f"  {code}: no history, skipping", file=sys.stderr)
+            continue
+        fixtures = _load_fixtures(per_league)
+        if not fixtures:
+            print(f"  {code}: no upcoming fixtures with prices, skipping")
+            continue
+        fixtures = _reconcile(fixtures, matches, args)
+        if not fixtures:
+            print(f"  {code}: every fixture dropped in team-name matching")
+            continue
+        if args.max_fixtures:
+            fixtures = fixtures[: args.max_fixtures]
+        groups.append((matches, fixtures))
+
+    if not groups:
+        print("\nNothing to price.\n"
               "The free fixtures feed only covers the next few days and is empty "
               "between seasons.\nSupply your own with --fixtures-csv, or try "
               "`bettingedge demo`.", file=sys.stderr)
         return 1
 
-    fixtures = _reconcile(fixtures, matches, args)
-    if not fixtures:
-        print("\nEvery fixture was dropped during team-name matching. Use "
-              "--team-alias to map the\nnames your odds provider uses onto the "
-              "names in your results data.", file=sys.stderr)
-        return 1
-
-    if args.max_fixtures:
-        fixtures = fixtures[: args.max_fixtures]
-
-    slate = Engine(_config_from(args)).build_slate(matches, fixtures)
+    slate = Engine(_config_from(args)).build_multi_slate(groups)
     print()
     print(render_slate(slate, detail=not args.brief, previews=args.previews))
     _maybe_write(args, slate)

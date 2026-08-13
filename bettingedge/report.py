@@ -47,11 +47,24 @@ def render_slate(slate: Slate, detail: bool = True, previews: bool = False) -> s
     model = slate.model
     out += [
         f"Generated      : {slate.generated_at:%Y-%m-%d %H:%M}",
-        f"Model          : Dixon-Coles, {model.n_matches} matches "
-        f"(effective sample {model.effective_sample:.0f}, "
-        f"half-life {model.config.half_life_days:.0f}d)",
-        f"Home advantage : {model.home_advantage:+.3f} log-goals   "
-        f"low-score rho: {model.rho:+.3f}",
+    ]
+    if len(slate.models) > 1:
+        out.append(f"Models         : {len(slate.models)} leagues, fitted separately")
+        for code, fit in slate.models.items():
+            flag = "  << thin sample" if fit.thin_sample else ""
+            out.append(f"   {code:<5} {fit.n_matches:>5} matches, "
+                       f"{fit.effective_matches_per_team:>4.0f} eff/team, "
+                       f"home {fit.home_advantage:+.3f}{flag}")
+    else:
+        out += [
+            f"Model          : Dixon-Coles, {model.n_matches} matches "
+            f"(effective sample {model.effective_sample:.0f}, "
+            f"{model.effective_matches_per_team:.0f} per team, "
+            f"half-life {model.config.half_life_days:.0f}d)",
+            f"Home advantage : {model.home_advantage:+.3f} log-goals   "
+            f"low-score rho: {model.rho:+.3f}",
+        ]
+    out += [
         f"Blend          : {slate.config.market.model_weight:.0%} model / "
         f"{1 - slate.config.market.model_weight:.0%} market fair price",
         f"Fixtures       : {len(slate.contexts)} priced"
@@ -59,16 +72,21 @@ def render_slate(slate: Slate, detail: bool = True, previews: bool = False) -> s
         "",
     ]
 
-    if model.thin_sample:
+    if any(m.thin_sample for m in (slate.models.values() or [model])):
         out += [
             "!! THIN SAMPLE WARNING",
-            f"   Only {model.effective_matches_per_team:.0f} time-weighted matches sit "
-            f"behind the average team's rating.",
+            "   " + ", ".join(
+                f"{code} {fit.effective_matches_per_team:.0f}"
+                for code, fit in (slate.models or {"model": model}).items()
+                if fit.thin_sample
+            ) + " time-weighted matches per team.",
             "   Early in a season the decay window is mostly off-season, so ratings are "
             "stale",
             "   last-season values. Expect the model to disagree with the market loudly "
             "and to be",
-            "   wrong when it does. Every edge below should be read with that in mind.",
+            "   wrong when it does. The confidence floor has been raised "
+            f"automatically to {slate.config.selection.thin_sample_min_confidence:.0f}",
+            "   for the affected leagues, so fewer bets survive than usual.",
             "",
         ]
 

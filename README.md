@@ -12,7 +12,7 @@ plainly when it cannot find one.
 
 ```
 bettingedge demo                    # runs offline, no network, no setup
-bettingedge recommend --league E0   # real prices for the upcoming card
+bettingedge recommend --league E0,E1,EC   # combined card across divisions
 bettingedge verify    --league E0   # five-stage check that any of this is real
 bettingedge backtest  --league E0   # walk-forward test on real history
 bettingedge serve                   # web dashboard on localhost:8000
@@ -325,6 +325,42 @@ commit or hand over for debugging.
 A capture is a snapshot: use it to verify parsing, team matching and pricing,
 not to place bets. Prices go stale within minutes.
 
+### Several divisions at once
+
+```bash
+bettingedge recommend --league E0,E1,EC --seasons 16
+```
+
+Each division is fitted separately — attack and defence ratings are only
+meaningful relative to the league they were estimated in, so a Championship
++0.3 is not a Premier League +0.3. Combination bets and staking then run across
+the whole card, since legs in different matches are independent whichever
+division they are in.
+
+### Confidence floor
+
+`--min-confidence` drops bets scoring below a threshold out of 100. It is 0 by
+default so you see everything that clears the edge test and can judge for
+yourself.
+
+It tightens on its own when it needs to. Early in a season a 180-day decay
+window is mostly off-season, so ratings are stale last-season values and the
+model produces its largest and least trustworthy disagreements with the market
+— 14–17% "edges" at 30/100 confidence. When the effective sample falls below
+about 20 matches per team the floor rises to the bottom-tier boundary
+automatically, and the card says so:
+
+```
+!! THIN SAMPLE WARNING
+   EC 16 time-weighted matches per team.
+   Early in a season the decay window is mostly off-season, so ratings are stale
+   last-season values. The confidence floor has been raised automatically to 34
+   for the affected leagues, so fewer bets survive than usual.
+```
+
+Raising `--half-life` does not fix this; it just averages in more stale data.
+Tested on sixteen National League seasons.
+
 ### Team names — the silent killer
 
 Your odds source says "Manchester United". Your results source says "Man
@@ -459,7 +495,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-266 tests. The ones that matter most:
+279 tests. The ones that matter most:
 
 - the analytic gradient is verified against finite differences
 - the fitter recovers known parameters from a simulated league
@@ -481,7 +517,9 @@ pytest
   with no API key and no network
 - the shot-conversion fit recovers a known rate from generated data, and the
   likelihood accepts the continuous expected-goals target
-- a thin early-season sample is detected and surfaced rather than hidden
+- a thin early-season sample is detected, surfaced, and automatically raises
+  the confidence floor
+- a multi-league card fits each division separately but stakes as one portfolio
 
 ---
 
