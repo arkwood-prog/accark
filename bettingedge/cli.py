@@ -409,7 +409,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     run_server(host=args.host, port=args.port, league=args.league, seasons=args.seasons,
                offline=args.offline, use_synthetic=args.synthetic,
-               config=_config_from(args), price_mode=args.price_mode)
+               config=_config_from(args), price_mode=args.price_mode,
+               token=getattr(args, "token", None))
     return 0
 
 
@@ -607,8 +608,11 @@ def build_parser() -> argparse.ArgumentParser:
     serve = subparsers.add_parser("serve", help="run the web dashboard")
     _add_data_arguments(serve)
     _add_config_arguments(serve)
-    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--host", default="127.0.0.1",
+                       help="use 0.0.0.0 to reach it from your phone on the same network")
     serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--token", help="require this token to access the dashboard "
+                                       "(or set BETTINGEDGE_TOKEN)")
     serve.set_defaults(func=cmd_serve)
 
     leagues = subparsers.add_parser("leagues", help="list supported league codes")

@@ -6,14 +6,16 @@ whenever the tuning parameters change, which is fast enough to feel live.
 
 from __future__ import annotations
 
+import os
+import secrets
 import threading
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
 from ..backtest.engine import run_backtest
 from ..config import Config
@@ -68,9 +70,34 @@ def _config_from_query(
     })
 
 
-def create_app(store: DataStore) -> FastAPI:
+ACCESS_TOKEN_ENV = "BETTINGEDGE_TOKEN"
+_COOKIE = "bettingedge_token"
+
+
+def create_app(store: DataStore, token: str | None = None) -> FastAPI:
     app = FastAPI(title="bettingedge", version="1.0.0",
                   description="Data-driven football betting analysis")
+
+    token = token if token is not None else os.environ.get(ACCESS_TOKEN_ENV)
+
+    if token:
+        # A deployed instance is reachable by anyone who finds the URL. One
+        # shared token, remembered in a cookie so the page keeps working after
+        # the first load: open https://host/?token=... once on the phone.
+        @app.middleware("http")
+        async def require_token(request: Request, call_next):
+            supplied = (request.query_params.get("token")
+                        or request.cookies.get(_COOKIE)
+                        or request.headers.get("x-bettingedge-token"))
+            if not supplied or not secrets.compare_digest(supplied, token):
+                return PlainTextResponse(
+                    "Not authorised. Append ?token=... to the URL.", status_code=401)
+            response = await call_next(request)
+            if request.query_params.get("token"):
+                response.set_cookie(_COOKIE, token, httponly=True, samesite="lax",
+                                    max_age=60 * 60 * 24 * 365, secure=
+                                    request.url.scheme == "https")
+            return response
 
     @app.get("/api/health")
     def health() -> dict:
@@ -166,6 +193,17 @@ def create_app(store: DataStore) -> FastAPI:
     def styles() -> FileResponse:
         return FileResponse(WEB_DIR / "styles.css", media_type="text/css")
 
+    @app.get("/manifest.json")
+    def manifest() -> FileResponse:
+        return FileResponse(WEB_DIR / "manifest.json", media_type="application/manifest+json")
+
+    @app.get("/icon-{size}.png")
+    def icon(size: int) -> FileResponse:
+        path = WEB_DIR / f"icon-{size}.png"
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="no icon at that size")
+        return FileResponse(path, media_type="image/png")
+
     return app
 
 
@@ -197,7 +235,7 @@ def load_store(league: str = "E0", seasons: int = 4, offline: bool = False,
 def run_server(host: str = "127.0.0.1", port: int = 8000, league: str = "E0",
                seasons: int = 4, offline: bool = False, use_synthetic: bool = False,
                config: Config | None = None,
-               price_mode: str = DEFAULT_PRICE_MODE) -> None:
+               price_mode: str = DEFAULT_PRICE_MODE, token: str | None = None) -> None:
     import uvicorn
 
     global STORE
@@ -208,6 +246,15 @@ def run_server(host: str = "127.0.0.1", port: int = 8000, league: str = "E0",
             "No match history could be loaded. Check the league code, or start with "
             "--synthetic to explore the app offline."
         )
-    app = create_app(STORE)
-    print(f"\nDashboard: http://{host}:{port}\n")
+    app = create_app(STORE, token=token)
+    active_token = token if token is not None else os.environ.get(ACCESS_TOKEN_ENV)
+    if active_token:
+        print(f"\nDashboard: http://{host}:{port}/?token={active_token}")
+        print("(the token is remembered in a cookie after the first load)\n")
+    else:
+        print(f"\nDashboard: http://{host}:{port}")
+        if host not in ("127.0.0.1", "localhost"):
+            print(f"WARNING: bound to {host} with no access token. Anyone who can reach "
+                  f"this\n         port can use it. Set {ACCESS_TOKEN_ENV} to require "
+                  "one.\n")
     uvicorn.run(app, host=host, port=port, log_level="warning")

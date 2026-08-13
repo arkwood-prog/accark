@@ -423,6 +423,40 @@ bettingedge serve --league E0        # then open http://127.0.0.1:8000
 bettingedge serve --synthetic        # offline demo
 ```
 
+### On a phone
+
+The dashboard is built for a phone as well as a desktop: the tab strip scrolls,
+slip metrics reflow to a grid, and wide tables scroll inside their own box so
+the page never moves sideways.
+
+**Same network, no deployment.** Bind to all interfaces and open your machine's
+LAN address on the phone:
+
+```bash
+bettingedge serve --league EC --host 0.0.0.0 --port 8000
+# then http://192.168.1.x:8000 on the phone
+```
+
+**A real URL.** There is a `Dockerfile` and a `fly.toml`:
+
+```bash
+fly launch --no-deploy --copy-config
+fly secrets set BETTINGEDGE_TOKEN=$(openssl rand -hex 16)
+fly deploy
+```
+
+Open `https://<app>.fly.dev/?token=<token>` once; the token is remembered in an
+HttpOnly cookie. Any Docker host works the same way — the image needs about 1GB
+of memory, because scipy plus several seasons of history does not fit in 256MB.
+
+**Add to home screen.** A web app manifest and icons are served, so iOS Share →
+*Add to Home Screen* and Android *Install app* both give a standalone icon with
+no browser chrome.
+
+**Lock it down.** Set `BETTINGEDGE_TOKEN` on anything reachable from the
+internet. Without it, anyone who finds the URL can use it; the server prints a
+warning if you bind to a public interface with no token set.
+
 Five tabs: **Recommendations** (expandable slips with full analysis),
 **Fixture analysis** (model read on every match, including the ones with no
 bet), **Model & ratings** (team strength table, fitted parameters),
@@ -495,7 +529,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-279 tests. The ones that matter most:
+288 tests. The ones that matter most:
 
 - the analytic gradient is verified against finite differences
 - the fitter recovers known parameters from a simulated league
@@ -520,6 +554,8 @@ pytest
 - a thin early-season sample is detected, surfaced, and automatically raises
   the confidence floor
 - a multi-league card fits each division separately but stakes as one portfolio
+- a token-protected instance refuses every route without the token, and accepts
+  it by query string, header or cookie
 
 ---
 

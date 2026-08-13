@@ -168,3 +168,73 @@ def test_cli_reports_errors_without_a_traceback(capsys):
 def test_parser_requires_a_command():
     with pytest.raises(SystemExit):
         build_parser().parse_args([])
+
+
+# ------------------------------------------------------------ access token
+def test_no_token_means_open_access():
+    matches, fixtures = synthetic.generate(seasons=2)
+    store = DataStore(league="SYN", matches=matches, fixtures=fixtures,
+                      source="synthetic", loaded_at=date.today())
+    assert TestClient(create_app(store, token=None)).get("/api/health").status_code == 200
+
+
+@pytest.fixture(scope="module")
+def guarded():
+    matches, fixtures = synthetic.generate(seasons=2, seed=12)
+    store = DataStore(league="SYN", matches=matches, fixtures=fixtures,
+                      source="synthetic", loaded_at=date.today())
+    return TestClient(create_app(store, token="s3cret"))
+
+
+def test_a_deployed_instance_refuses_requests_without_the_token(guarded):
+    assert guarded.get("/api/health").status_code == 401
+    assert guarded.get("/").status_code == 401
+
+
+def test_the_wrong_token_is_refused(guarded):
+    assert guarded.get("/api/health", params={"token": "guess"}).status_code == 401
+    assert guarded.get("/api/health",
+                       headers={"x-bettingedge-token": "guess"}).status_code == 401
+
+
+def test_the_right_token_is_accepted_by_query_header_or_cookie(guarded):
+    assert guarded.get("/api/health", params={"token": "s3cret"}).status_code == 200
+    assert guarded.get("/api/health",
+                       headers={"x-bettingedge-token": "s3cret"}).status_code == 200
+    assert guarded.get("/api/health", cookies={"bettingedge_token": "s3cret"}).status_code == 200
+
+
+def test_the_token_is_remembered_in_a_cookie(guarded):
+    """So the page keeps working on a phone after the first load."""
+    response = guarded.get("/", params={"token": "s3cret"})
+    assert response.status_code == 200
+    assert "bettingedge_token" in response.headers.get("set-cookie", "")
+    assert "HttpOnly" in response.headers.get("set-cookie", "")
+
+
+# ------------------------------------------------------------ mobile assets
+def test_the_web_app_manifest_is_served(client):
+    response = client.get("/manifest.json")
+    assert response.status_code == 200
+    manifest = response.json()
+    assert manifest["display"] == "standalone"
+    assert {icon["sizes"] for icon in manifest["icons"]} == {"192x192", "512x512"}
+
+
+def test_home_screen_icons_are_served(client):
+    for size in (192, 512):
+        response = client.get(f"/icon-{size}.png")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+        assert response.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_a_missing_icon_size_404s(client):
+    assert client.get("/icon-77.png").status_code == 404
+
+
+def test_the_page_declares_itself_installable(client):
+    html = client.get("/").text
+    assert 'rel="manifest"' in html
+    assert 'name="apple-mobile-web-app-capable"' in html
+    assert "viewport-fit=cover" in html

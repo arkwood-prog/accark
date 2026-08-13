@@ -30,6 +30,9 @@ a { color: var(--accent); }
 
 .wrap { max-width: 1180px; margin: 0 auto; padding: 0 20px 80px; }
 
+/* Nothing may push the page sideways on a phone. */
+html, body { max-width: 100%; }
+
 /* ---------- header ---------- */
 header {
   border-bottom: 1px solid var(--line);
@@ -50,11 +53,18 @@ header {
 .status b { color: var(--text); font-weight: 600; }
 
 /* ---------- tabs ---------- */
-.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: 0 0 22px; }
+.tabs {
+  display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: 0 0 22px;
+  /* Scroll the tab strip rather than letting it widen the page. */
+  overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.tabs::-webkit-scrollbar { display: none; }
 .tab {
   appearance: none; background: none; border: none; border-bottom: 2px solid transparent;
   color: var(--muted); padding: 12px 16px; font-size: 14px; font-weight: 500;
   cursor: pointer; transition: color .15s, border-color .15s;
+  white-space: nowrap; flex: 0 0 auto;
 }
 .tab:hover { color: var(--text); }
 .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
@@ -188,3 +198,44 @@ button.primary:disabled { opacity: .5; cursor: default; }
 }
 .spark { width: 100%; height: 160px; }
 .hidden { display: none; }
+
+/* ---------- phones ---------- */
+@media (max-width: 640px) {
+  .wrap { padding: 0 12px 60px; }
+  .header-inner { padding: 12px; gap: 8px; }
+  .status { margin-left: 0; text-align: left; font-size: 11px; width: 100%; }
+  .logo { font-size: 17px; }
+  .tagline { font-size: 12px; }
+
+  .controls { grid-template-columns: 1fr 1fr; gap: 12px; padding: 12px; }
+
+  /* Six metrics in a row does not fit 390px — wrap them into a grid. */
+  .slip-head { padding: 12px; gap: 8px; }
+  .slip-metrics {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 6px;
+    width: 100%; font-size: 12px;
+  }
+  .slip-metrics .m { text-align: left; }
+  .slip-title { flex: 1 1 100%; font-size: 14px; }
+  .leg { font-size: 12px; }
+  .leg .match, .leg .pick { flex: 1 1 100%; min-width: 0; }
+  .legs, .analysis { padding-left: 12px; padding-right: 12px; }
+  .analysis { font-size: 13px; }
+
+  .tiles { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .tile { padding: 12px; }
+  .tile .v { font-size: 19px; }
+
+  .fixture { padding: 12px; }
+  .fixture-head .teams { font-size: 14px; }
+
+  /* Wide content scrolls inside its own box, never the page. */
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { min-width: 520px; }
+}
+
+/* Standalone (added to home screen): clear the notch. */
+@media (display-mode: standalone) {
+  header { padding-top: env(safe-area-inset-top); }
+  .wrap { padding-bottom: calc(60px + env(safe-area-inset-bottom)); }
+}
