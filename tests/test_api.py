@@ -117,6 +117,47 @@ def test_cli_config_overrides_reach_the_engine(capsys):
     assert "5,000.00" in capsys.readouterr().out
 
 
+def test_cli_verify_runs_and_reports(capsys):
+    code = main(["verify", "--synthetic", "--seasons", "3", "--train-days", "420",
+                 "--refit-every", "40", "--skip-pessimistic", "--quiet"])
+    output = capsys.readouterr().out
+    assert code in (0, 1)          # 1 when a check legitimately fails
+    assert "BETTINGEDGE VERIFICATION" in output
+    assert "STAGE 1  DATA INTEGRITY" in output
+    assert "STAGE 5  STATISTICAL POWER" in output
+    assert "VERDICT" in output
+
+
+def test_cli_verify_writes_json(tmp_path, capsys):
+    path = tmp_path / "report.json"
+    main(["verify", "--synthetic", "--seasons", "3", "--train-days", "420",
+          "--refit-every", "40", "--skip-pessimistic", "--quiet", "--json", str(path)])
+    payload = json.loads(path.read_text())
+    assert len(payload["stages"]) == 5
+    assert payload["status"] in ("PASS", "WARN", "FAIL")
+
+
+def test_cli_backtest_pessimistic_switch(capsys):
+    assert main(["backtest", "--synthetic", "--seasons", "3", "--pessimistic",
+                 "--train-days", "420", "--refit-every", "40"]) == 0
+    output = capsys.readouterr().out
+    assert "Pessimistic mode" in output
+    assert "sharp closing price" in output
+
+
+def test_cli_rejects_an_unknown_price_mode():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["backtest", "--price-mode", "nonsense"])
+
+
+def test_cli_accepts_every_price_mode():
+    from bettingedge.data.footballdata import PRICE_MODES
+
+    for mode in PRICE_MODES:
+        args = build_parser().parse_args(["backtest", "--price-mode", mode])
+        assert args.price_mode == mode
+
+
 def test_cli_reports_errors_without_a_traceback(capsys):
     """A bad path should produce a clean message, not a stack dump."""
     code = main(["recommend", "--results-csv", "/no/such/file.csv"])

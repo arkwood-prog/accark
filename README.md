@@ -13,6 +13,7 @@ plainly when it cannot find one.
 ```
 bettingedge demo                    # runs offline, no network, no setup
 bettingedge recommend --league E0   # real prices for the upcoming card
+bettingedge verify    --league E0   # five-stage check that any of this is real
 bettingedge backtest  --league E0   # walk-forward test on real history
 bettingedge serve                   # web dashboard on localhost:8000
 ```
@@ -163,6 +164,57 @@ shopping), form, staking, and a specific list of risks.
 
 ---
 
+## Verifying with live data
+
+```bash
+bettingedge verify --league E0 --seasons 6
+```
+
+One command runs the whole ladder, cheapest and most diagnostic first, and
+exits non-zero if anything fails so you can gate a script on it.
+
+| Stage | What it answers | Example checks |
+|---|---|---|
+| 1. Data integrity | Did the right numbers arrive? | goals/game 2.2–3.6, home win rate 35–55%, price coverage, median overround |
+| 2. Model sanity | Does the fit describe football? | home advantage +0.10 to +0.45, ρ in range, rating spread, top/bottom teams printed for your eyes |
+| 3. Forecast quality | Does the model know anything? | log loss vs the market, Brier, worst calibration band |
+| 4. Price realism | Is the edge real or just shopping? | yield at best price vs **sharp price only**, hit rate vs implied |
+| 5. Statistical power | Does the number mean anything? | yield ± 2 standard errors, bets needed to prove a 2% edge |
+
+Several checks fire on results that look **too good**, because on this problem
+an implausible number is far more likely to be a leak than an edge. A model
+beating the closing line by more than 0.02 nats, or a yield above 8%, gets
+warned about rather than celebrated.
+
+Stage 2 is the one to read with your own football knowledge. It prints the
+strongest and weakest teams; if that list looks wrong to you, stop — no
+downstream maths fixes a model that disagrees with the table.
+
+### Price modes
+
+Each football-data.co.uk file carries two snapshots per market: a pre-closing
+price and a closing price. Which pair you read decides what a backtest actually
+measures, so it is an explicit flag rather than a buried default.
+
+| `--price-mode` | You bet at | Scored against | What it measures |
+|---|---|---|---|
+| `best-closing` *(default)* | best closing price across all books | Pinnacle closing | Optimistic. Both sides are closing prices, so its CLV number reflects price shopping, not market movement |
+| `early` | best price *before* the close | Pinnacle closing | **The honest CLV test.** Positive means the market moved toward your bet after you placed it |
+| `sharp-only` | Pinnacle closing | itself | Pessimistic. No shopping at all — whatever survives is model edge |
+
+```bash
+bettingedge verify   --league E0 --seasons 6 --price-mode early
+bettingedge backtest --league E0 --seasons 6 --pessimistic
+```
+
+`--pessimistic` applies the same stripping to any source, including your own
+CSVs, by settling every bet at the sharp closing price. Expect the bet count to
+fall sharply and CLV to go negative — you cannot beat a line you are taking.
+
+The gap between the two runs is the number to internalise: if the edge only
+exists at the best price across ten books, it is real money but it is shopping,
+not modelling, and it is what gets accounts limited.
+
 ## Backtesting
 
 ```bash
@@ -256,16 +308,20 @@ and maximum acca legs are all live controls — moving them refits and reprices.
 |---|---|
 | `demo` | Full run on generated offline data |
 | `recommend` | Price the upcoming card and recommend bets |
+| `verify` | Five-stage verification ladder on real data |
 | `backtest` | Walk-forward test on historical results |
 | `ratings` | Current team strength table |
 | `serve` | Web dashboard |
 | `leagues` | List league codes |
 
 Common options: `--league`, `--seasons`, `--bankroll`, `--kelly`, `--min-edge`,
-`--model-weight`, `--half-life`, `--max-legs`, `--json`, `--markdown`,
-`--fixtures-csv`, `--results-csv`, `--offline`, `--synthetic`.
+`--model-weight`, `--half-life`, `--max-legs`, `--price-mode`, `--json`,
+`--markdown`, `--fixtures-csv`, `--results-csv`, `--offline`, `--synthetic`.
 
 ```bash
+# Before trusting anything: does the pipeline survive a hostile read?
+bettingedge verify --league E0 --seasons 6 --price-mode early
+
 # Conservative: trust the market more, demand a bigger edge, stake smaller
 bettingedge recommend --league I1 --model-weight 0.2 --min-edge 0.05 --kelly 0.15
 
@@ -281,6 +337,7 @@ bettingedge recommend --league SP1 --json slate.json --markdown slate.md
 bettingedge/
 ├── config.py            every tunable, in one place
 ├── pipeline.py          the engine: history in, ranked slips out
+├── verify.py            the five-stage verification ladder
 ├── report.py            terminal and Markdown rendering
 ├── cli.py               command line interface
 ├── data/                schemas, football-data.co.uk, CSV import, synthetic league
@@ -302,7 +359,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-156 tests. The ones that matter most:
+182 tests. The ones that matter most:
 
 - the analytic gradient is verified against finite differences
 - the fitter recovers known parameters from a simulated league
@@ -312,6 +369,10 @@ pytest
 - staking caps, exposure ceilings and fractional-Kelly behaviour
 - backtest accounting reconciles bet by bet, and the hit rate is checked
   against the implied probability of the prices taken
+- each price mode reads the columns it claims to, and degrades gracefully on
+  older seasons that have no closing prices
+- the verification ladder catches deliberately corrupted data — swapped home
+  and away teams, impossible scorelines
 
 ---
 

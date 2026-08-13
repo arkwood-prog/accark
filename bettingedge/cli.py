@@ -3,6 +3,7 @@
     bettingedge demo                       run on the bundled offline dataset
     bettingedge recommend --league E0      today's card from live prices
     bettingedge backtest  --league E0      walk-forward test on real history
+    bettingedge verify    --league E0      full verification ladder on real data
     bettingedge ratings   --league E0      current team strength table
     bettingedge serve                      web dashboard on localhost:8000
 """
@@ -19,9 +20,17 @@ from .backtest.engine import run_backtest
 from .config import Config
 from .data import synthetic
 from .data.csvsource import load_fixtures_csv, load_results_csv
-from .data.footballdata import LEAGUES, FootballDataUK, recent_seasons
+from .data.footballdata import (
+    DEFAULT_PRICE_MODE,
+    LEAGUES,
+    PRICE_MODES,
+    FootballDataUK,
+    recent_seasons,
+    resolve_price_mode,
+)
 from .pipeline import Engine
 from .report import DISCLAIMER, render_markdown, render_slate
+from .verify import sharp_only, verify
 
 
 # --------------------------------------------------------------------------
@@ -40,6 +49,11 @@ def _add_data_arguments(parser: argparse.ArgumentParser) -> None:
                         help="never hit the network; use cached files only")
     parser.add_argument("--synthetic", action="store_true",
                         help="use the generated offline dataset (no network needed)")
+    parser.add_argument("--price-mode", default=DEFAULT_PRICE_MODE, choices=list(PRICE_MODES),
+                        help="which price snapshot to read: 'best-closing' (default, best "
+                             "price across books at the close), 'early' (pre-closing price "
+                             "scored against the closing line — the honest CLV test), or "
+                             "'sharp-only' (assume you only get the sharp closing line)")
 
 
 def _add_config_arguments(parser: argparse.ArgumentParser) -> None:
@@ -73,7 +87,10 @@ def _config_from(args: argparse.Namespace) -> Config:
 
 
 def _source(args: argparse.Namespace) -> FootballDataUK:
-    kwargs = {"offline": bool(getattr(args, "offline", False))}
+    kwargs = {
+        "offline": bool(getattr(args, "offline", False)),
+        "price_mode": getattr(args, "price_mode", DEFAULT_PRICE_MODE),
+    }
     if getattr(args, "cache", None):
         kwargs["cache_dir"] = args.cache
     return FootballDataUK(**kwargs)
@@ -87,8 +104,10 @@ def _load_history(args: argparse.Namespace):
     if getattr(args, "results_csv", None):
         return load_results_csv(args.results_csv)
     seasons = recent_seasons(args.seasons)
+    mode = resolve_price_mode(getattr(args, "price_mode", DEFAULT_PRICE_MODE))
     print(f"Loading {args.league} ({LEAGUES.get(args.league, 'unknown league')}), "
           f"seasons {', '.join(seasons)} ...")
+    print(f"  price mode: {mode.key} — {mode.description}")
     matches = _source(args).results(args.league, seasons)
     print(f"  {len(matches)} matches loaded")
     return matches
@@ -152,6 +171,19 @@ def cmd_backtest(args: argparse.Namespace) -> int:
               "Increase --seasons.", file=sys.stderr)
         return 1
     config = _config_from(args)
+
+    if args.pessimistic:
+        stripped = sharp_only(matches)
+        if len(stripped) < 200:
+            print("\nNot enough matches carry a sharp closing price for the pessimistic "
+                  "run.\nDrop --pessimistic, or load seasons that include the closing "
+                  "columns.", file=sys.stderr)
+            return 1
+        print(f"\nPessimistic mode: settling every bet at the sharp closing price "
+              f"({len(stripped)} of {len(matches)} matches have one).")
+        print("Price shopping contributes nothing here — what survives is model edge.")
+        matches = stripped
+
     print(f"\nWalk-forward backtest over {len(matches)} matches "
           f"({matches[0].date} to {matches[-1].date})")
     print(f"Training window opens after {args.train_days} days; refitting every "
@@ -213,6 +245,42 @@ def _backtest_verdict(result) -> str:
     return "\n".join(lines)
 
 
+def cmd_verify(args: argparse.Namespace) -> int:
+    """Run the whole verification ladder against whichever data is loaded."""
+    matches = _load_history(args)
+    if not matches:
+        print("No history loaded — nothing to verify.", file=sys.stderr)
+        return 1
+
+    if getattr(args, "synthetic", False):
+        label = "synthetic offline dataset"
+        mode_note = ("Synthetic data: simulated books price off the true probabilities, "
+                     "so treat every performance number here as a machinery check only.")
+    else:
+        mode = resolve_price_mode(args.price_mode)
+        label = f"{args.league} ({LEAGUES.get(args.league, 'unknown league')})"
+        mode_note = f"Price mode '{mode.key}': {mode.measures}"
+
+    report = verify(
+        matches,
+        config=_config_from(args),
+        label=label,
+        train_days=args.train_days,
+        refit_every=args.refit_every,
+        price_mode_note=mode_note,
+        run_pessimistic=not args.skip_pessimistic,
+        progress=(lambda line: print(f"  {line}")) if not args.quiet else None,
+    )
+    print()
+    print(report.render())
+    if args.json:
+        Path(args.json).write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+        print(f"Wrote {args.json}")
+    print(DISCLAIMER)
+    # Non-zero exit on a failed check, so this can gate a script.
+    return 1 if report.status == "FAIL" else 0
+
+
 def cmd_ratings(args: argparse.Namespace) -> int:
     matches = _load_history(args)
     if not matches:
@@ -237,7 +305,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     run_server(host=args.host, port=args.port, league=args.league, seasons=args.seasons,
                offline=args.offline, use_synthetic=args.synthetic,
-               config=_config_from(args))
+               config=_config_from(args), price_mode=args.price_mode)
     return 0
 
 
@@ -296,9 +364,26 @@ def build_parser() -> argparse.ArgumentParser:
                           help="days of history before the first simulated bet")
     backtest.add_argument("--refit-every", type=int, default=7,
                           help="refit the model every N days (default: 7)")
+    backtest.add_argument("--pessimistic", action="store_true",
+                          help="settle every bet at the sharp closing price instead of the "
+                               "best price across books — removes all price-shopping edge")
     backtest.add_argument("--json", help="write full results as JSON")
     backtest.add_argument("--verbose", action="store_true")
     backtest.set_defaults(func=cmd_backtest)
+
+    verify_cmd = subparsers.add_parser(
+        "verify", help="run the full verification ladder on real data")
+    _add_data_arguments(verify_cmd)
+    _add_config_arguments(verify_cmd)
+    verify_cmd.add_argument("--train-days", type=int, default=400,
+                            help="days of history before the first simulated bet")
+    verify_cmd.add_argument("--refit-every", type=int, default=14,
+                            help="refit the model every N days (default: 14)")
+    verify_cmd.add_argument("--skip-pessimistic", action="store_true",
+                            help="skip the sharp-price-only re-run (roughly halves runtime)")
+    verify_cmd.add_argument("--json", help="write the report as JSON")
+    verify_cmd.add_argument("--quiet", action="store_true", help="no progress output")
+    verify_cmd.set_defaults(func=cmd_verify)
 
     ratings = subparsers.add_parser("ratings", help="show the team strength table")
     _add_data_arguments(ratings)

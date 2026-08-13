@@ -14,6 +14,7 @@ offer, and sizes bets so that a real edge can survive variance.
 
 from .config import Config, MarketConfig, ModelConfig, ParlayConfig, SelectionConfig, StakingConfig
 from .pipeline import Engine, Slate
+from .verify import VerificationReport, sharp_only, verify
 
 __version__ = "1.0.0"
 
@@ -26,5 +27,8 @@ __all__ = [
     "StakingConfig",
     "Engine",
     "Slate",
+    "verify",
+    "sharp_only",
+    "VerificationReport",
     "__version__",
 ]

@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 import io
 import os
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -49,18 +50,113 @@ LEAGUES: dict[str, str] = {
 
 DEFAULT_CACHE = Path(os.environ.get("BETTINGEDGE_CACHE", Path.home() / ".cache" / "bettingedge"))
 
-# Preference order for the *sharp* reference price: Pinnacle closing first,
-# then market-average closing, then the pre-closing equivalents.
-_SHARP_1X2 = [("PSCH", "PSCD", "PSCA"), ("AvgCH", "AvgCD", "AvgCA"),
-              ("PSH", "PSD", "PSA"), ("AvgH", "AvgD", "AvgA"),
-              ("B365H", "B365D", "B365A")]
-# Preference order for the *best available* price.
-_BEST_1X2 = [("MaxCH", "MaxCD", "MaxCA"), ("MaxH", "MaxD", "MaxA")] + _SHARP_1X2
+# --------------------------------------------------------------------------
+# Price snapshots
+# --------------------------------------------------------------------------
+# Each file carries two snapshots per market: a pre-closing price (B365H, PSH,
+# MaxH, AvgH) and a closing price (B365CH, PSCH, MaxCH, AvgCH). Which pair you
+# read decides what a backtest actually measures, so it is an explicit choice
+# rather than a buried default.
+#
+# Each entry below is a preference chain — the first group where every price is
+# present wins. The chains matter because seasons before ~2019 have no closing
+# columns at all, and a long backtest has to degrade gracefully.
 
-_SHARP_OU25 = [("PC>2.5", "PC<2.5"), ("AvgC>2.5", "AvgC<2.5"),
-               ("P>2.5", "P<2.5"), ("Avg>2.5", "Avg<2.5"),
-               ("B365>2.5", "B365<2.5")]
-_BEST_OU25 = [("MaxC>2.5", "MaxC<2.5"), ("Max>2.5", "Max<2.5")] + _SHARP_OU25
+_BEST_CLOSING_1X2 = [("MaxCH", "MaxCD", "MaxCA")]
+_BEST_EARLY_1X2 = [("MaxH", "MaxD", "MaxA"), ("B365H", "B365D", "B365A")]
+_SHARP_CLOSING_1X2 = [("PSCH", "PSCD", "PSCA"), ("AvgCH", "AvgCD", "AvgCA")]
+_SHARP_EARLY_1X2 = [("PSH", "PSD", "PSA"), ("AvgH", "AvgD", "AvgA"),
+                    ("B365H", "B365D", "B365A")]
+
+_BEST_CLOSING_OU = [("MaxC>2.5", "MaxC<2.5")]
+_BEST_EARLY_OU = [("Max>2.5", "Max<2.5"), ("B365>2.5", "B365<2.5")]
+_SHARP_CLOSING_OU = [("PC>2.5", "PC<2.5"), ("AvgC>2.5", "AvgC<2.5")]
+_SHARP_EARLY_OU = [("P>2.5", "P<2.5"), ("Avg>2.5", "Avg<2.5"),
+                   ("B365>2.5", "B365<2.5")]
+
+
+@dataclass(frozen=True)
+class PriceMode:
+    """Which columns supply the price you bet at, and the reference to beat."""
+
+    key: str
+    label: str
+    description: str
+    measures: str
+    best_1x2: tuple[tuple[str, ...], ...]
+    sharp_1x2: tuple[tuple[str, ...], ...]
+    best_ou: tuple[tuple[str, ...], ...]
+    sharp_ou: tuple[tuple[str, ...], ...]
+
+
+PRICE_MODES: dict[str, PriceMode] = {
+    "best-closing": PriceMode(
+        key="best-closing",
+        label="best closing price",
+        description=(
+            "Bet at the best closing price across every book; reference is "
+            "Pinnacle's closing line."
+        ),
+        measures=(
+            "Optimistic. Both sides are closing prices, so the reported closing-line "
+            "value measures how good your price shopping was, not whether the market "
+            "moved toward you."
+        ),
+        best_1x2=tuple(_BEST_CLOSING_1X2 + _BEST_EARLY_1X2 + _SHARP_CLOSING_1X2
+                       + _SHARP_EARLY_1X2),
+        sharp_1x2=tuple(_SHARP_CLOSING_1X2 + _SHARP_EARLY_1X2),
+        best_ou=tuple(_BEST_CLOSING_OU + _BEST_EARLY_OU + _SHARP_CLOSING_OU
+                      + _SHARP_EARLY_OU),
+        sharp_ou=tuple(_SHARP_CLOSING_OU + _SHARP_EARLY_OU),
+    ),
+    "early": PriceMode(
+        key="early",
+        label="pre-closing price vs the closing line",
+        description=(
+            "Bet at the best price available *before* the close; reference is "
+            "Pinnacle's closing line."
+        ),
+        measures=(
+            "The honest closing-line-value test. Positive CLV here means the market "
+            "moved toward your bet after you placed it, which is the strongest "
+            "available evidence of a real edge."
+        ),
+        best_1x2=tuple(_BEST_EARLY_1X2),
+        sharp_1x2=tuple(_SHARP_CLOSING_1X2),
+        best_ou=tuple(_BEST_EARLY_OU),
+        sharp_ou=tuple(_SHARP_CLOSING_OU),
+    ),
+    "sharp-only": PriceMode(
+        key="sharp-only",
+        label="sharp closing price only",
+        description=(
+            "Assume you can only ever get Pinnacle's closing line — no shopping, "
+            "no early price."
+        ),
+        measures=(
+            "Pessimistic. Strips out every penny of price-shopping edge, leaving "
+            "only what the model itself contributes. If an edge survives this, it "
+            "is a model edge."
+        ),
+        best_1x2=tuple(_SHARP_CLOSING_1X2 + _SHARP_EARLY_1X2),
+        sharp_1x2=tuple(_SHARP_CLOSING_1X2 + _SHARP_EARLY_1X2),
+        best_ou=tuple(_SHARP_CLOSING_OU + _SHARP_EARLY_OU),
+        sharp_ou=tuple(_SHARP_CLOSING_OU + _SHARP_EARLY_OU),
+    ),
+}
+
+DEFAULT_PRICE_MODE = "best-closing"
+
+
+def resolve_price_mode(mode: str | PriceMode | None) -> PriceMode:
+    if isinstance(mode, PriceMode):
+        return mode
+    key = mode or DEFAULT_PRICE_MODE
+    if key not in PRICE_MODES:
+        raise ValueError(
+            f"unknown price mode {key!r}; choose one of {', '.join(PRICE_MODES)}"
+        )
+    return PRICE_MODES[key]
 
 
 def _to_float(raw: str | None) -> float | None:
@@ -105,14 +201,16 @@ def _parse_date(raw: str) -> date | None:
     return None
 
 
-def _odds_from_row(row: dict[str, str]) -> tuple[dict[str, float], dict[str, float], dict[str, int]]:
+def _odds_from_row(
+    row: dict[str, str], mode: PriceMode
+) -> tuple[dict[str, float], dict[str, float], dict[str, int]]:
     """Extract best / sharp prices and book counts for the markets available."""
     best: dict[str, float] = {}
     sharp: dict[str, float] = {}
     counts: dict[str, int] = {}
 
-    sharp_1x2 = _first_complete(row, _SHARP_1X2)
-    best_1x2 = _first_complete(row, _BEST_1X2)
+    sharp_1x2 = _first_complete(row, mode.sharp_1x2)
+    best_1x2 = _first_complete(row, mode.best_1x2)
     if sharp_1x2:
         for sel, price in zip(("1X2:H", "1X2:D", "1X2:A"), sharp_1x2):
             sharp[sel] = price
@@ -122,8 +220,8 @@ def _odds_from_row(row: dict[str, str]) -> tuple[dict[str, float], dict[str, flo
             best[sel] = price
             counts[sel] = n_books
 
-    sharp_ou = _first_complete(row, _SHARP_OU25)
-    best_ou = _first_complete(row, _BEST_OU25)
+    sharp_ou = _first_complete(row, mode.sharp_ou)
+    best_ou = _first_complete(row, mode.best_ou)
     if sharp_ou:
         for sel, price in zip(("OU2.5:O", "OU2.5:U"), sharp_ou):
             sharp[sel] = price
@@ -142,8 +240,10 @@ def _row_teams(row: dict[str, str]) -> tuple[str, str]:
     return home, away
 
 
-def parse_results_csv(text: str, league: str) -> list[Match]:
+def parse_results_csv(text: str, league: str,
+                      price_mode: str | PriceMode | None = None) -> list[Match]:
     """Parse a football-data.co.uk season file into Match objects."""
+    mode = resolve_price_mode(price_mode)
     matches: list[Match] = []
     reader = csv.DictReader(io.StringIO(text))
     for row in reader:
@@ -159,7 +259,7 @@ def parse_results_csv(text: str, league: str) -> list[Match]:
             home_goals, away_goals = int(float(raw_hg)), int(float(raw_ag))
         except ValueError:
             continue
-        best, sharp, _ = _odds_from_row(row)
+        best, sharp, _ = _odds_from_row(row, mode)
         matches.append(
             Match(
                 date=match_date,
@@ -176,8 +276,15 @@ def parse_results_csv(text: str, league: str) -> list[Match]:
     return matches
 
 
-def parse_fixtures_csv(text: str, leagues: Sequence[str] | None = None) -> list[Fixture]:
-    """Parse the upcoming-fixtures file (all leagues in one CSV)."""
+def parse_fixtures_csv(text: str, leagues: Sequence[str] | None = None,
+                       price_mode: str | PriceMode | None = None) -> list[Fixture]:
+    """Parse the upcoming-fixtures file (all leagues in one CSV).
+
+    The fixtures feed only ever carries pre-closing prices, so the closing
+    columns a price mode may ask for simply are not there; the preference
+    chains fall through to what exists.
+    """
+    mode = resolve_price_mode(price_mode)
     wanted = set(leagues) if leagues else None
     fixtures: list[Fixture] = []
     reader = csv.DictReader(io.StringIO(text))
@@ -189,7 +296,7 @@ def parse_fixtures_csv(text: str, leagues: Sequence[str] | None = None) -> list[
         home, away = _row_teams(row)
         if not (fixture_date and home and away):
             continue
-        best, sharp, counts = _odds_from_row(row)
+        best, sharp, counts = _odds_from_row(row, mode)
         if not best:
             continue
         fixtures.append(
@@ -226,10 +333,11 @@ class FootballDataUK:
     """Downloads (and caches) results and fixtures."""
 
     def __init__(self, cache_dir: Path | str = DEFAULT_CACHE, timeout: int = 30,
-                 offline: bool = False):
+                 offline: bool = False, price_mode: str | PriceMode | None = None):
         self.cache_dir = Path(cache_dir)
         self.timeout = timeout
         self.offline = offline
+        self.price_mode = resolve_price_mode(price_mode)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _get(self, url: str, cache_name: str, max_age_hours: float | None = None) -> str:
@@ -261,10 +369,10 @@ class FootballDataUK:
             except Exception as exc:  # a missing season should not kill the run
                 print(f"  ! could not load {league} {season}: {exc}")
                 continue
-            matches.extend(parse_results_csv(text, league))
+            matches.extend(parse_results_csv(text, league, self.price_mode))
         matches.sort(key=lambda m: m.date)
         return matches
 
     def fixtures(self, leagues: Sequence[str] | None = None) -> list[Fixture]:
         text = self._get(f"{BASE_URL}/fixtures.csv", "fixtures.csv", max_age_hours=3)
-        return parse_fixtures_csv(text, leagues)
+        return parse_fixtures_csv(text, leagues, self.price_mode)

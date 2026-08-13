@@ -18,7 +18,12 @@ from fastapi.responses import FileResponse, JSONResponse
 from ..backtest.engine import run_backtest
 from ..config import Config
 from ..data import synthetic
-from ..data.footballdata import LEAGUES, FootballDataUK, recent_seasons
+from ..data.footballdata import (
+    DEFAULT_PRICE_MODE,
+    LEAGUES,
+    FootballDataUK,
+    recent_seasons,
+)
 from ..data.schema import Fixture, Match
 from ..pipeline import Engine
 from ..report import DISCLAIMER, render_markdown
@@ -165,14 +170,15 @@ def create_app(store: DataStore) -> FastAPI:
 
 
 def load_store(league: str = "E0", seasons: int = 4, offline: bool = False,
-               use_synthetic: bool = False) -> DataStore:
+               use_synthetic: bool = False,
+               price_mode: str = DEFAULT_PRICE_MODE) -> DataStore:
     if use_synthetic:
         matches, fixtures = synthetic.generate(seasons=max(2, seasons))
         return DataStore(league="SYN", matches=matches, fixtures=fixtures,
                          source="synthetic (offline demo data — not real matches)",
                          loaded_at=date.today())
 
-    source = FootballDataUK(offline=offline)
+    source = FootballDataUK(offline=offline, price_mode=price_mode)
     codes = recent_seasons(seasons)
     print(f"Loading {league} history for seasons {', '.join(codes)} ...")
     matches = source.results(league, codes)
@@ -184,17 +190,19 @@ def load_store(league: str = "E0", seasons: int = 4, offline: bool = False,
         print(f"  ! could not load fixtures: {exc}")
         fixtures = []
     return DataStore(league=league, matches=matches, fixtures=fixtures,
-                     source="football-data.co.uk", loaded_at=date.today())
+                     source=f"football-data.co.uk ({price_mode} prices)",
+                     loaded_at=date.today())
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8000, league: str = "E0",
                seasons: int = 4, offline: bool = False, use_synthetic: bool = False,
-               config: Config | None = None) -> None:
+               config: Config | None = None,
+               price_mode: str = DEFAULT_PRICE_MODE) -> None:
     import uvicorn
 
     global STORE
     STORE = load_store(league=league, seasons=seasons, offline=offline,
-                       use_synthetic=use_synthetic)
+                       use_synthetic=use_synthetic, price_mode=price_mode)
     if not STORE.matches:
         raise SystemExit(
             "No match history could be loaded. Check the league code, or start with "
