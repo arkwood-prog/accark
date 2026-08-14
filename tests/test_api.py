@@ -293,3 +293,52 @@ def test_documentation_ranges_are_not_offered_as_a_lan_address():
     assert not reachable("192.0.2.2")      # TEST-NET-1
     assert not reachable("169.254.1.1")    # link-local
     assert not reachable("127.0.0.1") and not reachable("8.8.8.8")
+
+
+# ------------------------------------------------------------ logo assets
+def test_the_svg_logo_is_served(client):
+    response = client.get("/logo.svg")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/svg+xml")
+    body = response.text
+    assert body.startswith("<svg") and body.rstrip().endswith("</svg>")
+    # Four coloured panels, one per blade.
+    assert body.count("<polygon") == 8      # four grooves plus four colours
+
+
+def test_the_page_uses_the_ball_as_its_icon(client):
+    html = client.get("/").text
+    assert '<img class="mark" src="/logo.svg"' in html
+    assert 'type="image/svg+xml" href="/logo.svg"' in html
+    # The placeholder emoji favicon must be gone.
+    assert "text y='26'" not in html
+
+
+def test_the_generator_reproduces_the_committed_svg():
+    """The icons are generated, so a stale checked-in file would be a lie."""
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(root / "tools"))
+    try:
+        import make_logo
+    except ImportError:
+        pytest.skip("generator not available")
+    finally:
+        sys.path.pop(0)
+
+    committed = (root / "bettingedge" / "web" / "logo.svg").read_text(encoding="utf-8")
+    assert make_logo.render_svg() == committed
+
+
+def test_the_icons_are_square_and_the_expected_size():
+    import struct
+    from pathlib import Path
+
+    web = Path(__file__).resolve().parent.parent / "bettingedge" / "web"
+    for size in (192, 512):
+        data = (web / f"icon-{size}.png").read_bytes()
+        assert data[:8] == b"\x89PNG\r\n\x1a\n"
+        width, height = struct.unpack(">II", data[16:24])
+        assert (width, height) == (size, size)

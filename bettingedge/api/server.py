@@ -260,6 +260,10 @@ def create_app(store: DataStore, token: str | None = None) -> FastAPI:
     def styles() -> FileResponse:
         return FileResponse(WEB_DIR / "styles.css", media_type="text/css")
 
+    @app.get("/logo.svg")
+    def logo() -> FileResponse:
+        return FileResponse(WEB_DIR / "logo.svg", media_type="image/svg+xml")
+
     @app.get("/manifest.json")
     def manifest() -> FileResponse:
         return FileResponse(WEB_DIR / "manifest.json", media_type="application/manifest+json")

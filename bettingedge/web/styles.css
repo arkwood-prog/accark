@@ -43,6 +43,7 @@ header {
   max-width: 1180px; margin: 0 auto; padding: 16px 20px;
   display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
 }
+.mark { display: block; flex: 0 0 auto; width: 38px; height: 38px; }
 .logo { font-size: 19px; font-weight: 700; letter-spacing: -0.02em; }
 .logo span { color: var(--accent); }
 .tagline { color: var(--muted); font-size: 13px; }
@@ -205,6 +206,7 @@ button.primary:disabled { opacity: .5; cursor: default; }
   .header-inner { padding: 12px; gap: 8px; }
   .status { margin-left: 0; text-align: left; font-size: 11px; width: 100%; }
   .logo { font-size: 17px; }
+  .mark { width: 30px; height: 30px; }
   .tagline { font-size: 12px; }
 
   .controls { grid-template-columns: 1fr 1fr; gap: 12px; padding: 12px; }

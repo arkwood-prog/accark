@@ -475,7 +475,14 @@ of memory, because scipy plus several seasons of history does not fit in 256MB.
 
 **Add to home screen.** A web app manifest and icons are served, so iOS Share →
 *Add to Home Screen* and Android *Install app* both give a standalone icon with
-no browser chrome.
+no browser chrome — a Jabulani-style football, drawn to stay legible at 48px.
+
+The logo is generated, not hand-drawn, so the vector mark and the raster
+launcher icons come from one piece of geometry and cannot drift apart:
+
+```bash
+python tools/make_logo.py     # writes logo.svg, icon-192.png, icon-512.png
+```
 
 **Lock it down.** Set `BETTINGEDGE_TOKEN` on anything reachable from the
 internet. Without it, anyone who finds the URL can use it; the server prints a
@@ -553,7 +560,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-293 tests. The ones that matter most:
+297 tests. The ones that matter most:
 
 - the analytic gradient is verified against finite differences
 - the fitter recovers known parameters from a simulated league
@@ -582,6 +589,8 @@ pytest
   it by query string, header or cookie
 - LAN detection only ever offers a genuine home-network address, never a
   loopback, public or documentation-range one
+- the committed logo matches what the generator produces, so the checked-in
+  asset can never go stale
 
 ---
 
