@@ -25,11 +25,11 @@ function md(text) {
     .join('');
 }
 
-const state = { slate: null, health: null, backtest: null, tab: 'bets' };
+const state = { slate: null, health: null, backtest: null, tab: 'bets', league: null };
 
 /* ------------------------------------------------------------------ params */
 function params() {
-  return new URLSearchParams({
+  const p = new URLSearchParams({
     bankroll: $('bankroll').value,
     kelly: $('kelly').value,
     min_edge: $('minedge').value,
@@ -38,6 +38,8 @@ function params() {
     max_legs: $('maxlegs').value,
     min_leg_edge: $('minedge').value,
   });
+  if (state.league) p.set('league', state.league);
+  return p;
 }
 
 function syncLabels() {
@@ -448,7 +450,7 @@ function renderStatus(health) {
 
 async function pollHealth() {
   try {
-    const health = await (await fetch('/api/health')).json();
+    const health = await (await fetch(`/api/health?${params()}`)).json();
     const previous = state.health && state.health.refreshed_at;
     state.health = health;
     renderStatus(health);
@@ -460,10 +462,53 @@ async function pollHealth() {
   }
 }
 
+/** Everything that changes when a different league is picked. */
+async function switchLeague(code) {
+  state.league = code;
+  state.slate = null;
+  state.backtest = null;
+  const url = new URL(window.location);
+  url.searchParams.set('league', code);
+  window.history.replaceState({}, '', url);   // bookmarkable, survives a refresh
+  renderActive();
+  try {
+    const health = await (await fetch(`/api/health?${params()}`)).json();
+    state.health = health;
+    renderStatus(health);
+  } catch (err) { /* status line just goes stale; not fatal */ }
+  loadSlate();
+}
+
+/**
+ * Populate the league dropdown from what the server actually has loaded.
+ * Only one league loaded -> the picker stays hidden; nothing to choose.
+ */
+async function loadLeagueOptions() {
+  const select = $('league-select');
+  try {
+    const leagues = await (await fetch('/api/leagues')).json();
+    if (!Array.isArray(leagues) || leagues.length < 2) return;
+
+    const fromUrl = new URLSearchParams(window.location.search).get('league');
+    const primary = leagues.find((l) => l.is_primary) || leagues[0];
+    const startCode = leagues.some((l) => l.code === fromUrl) ? fromUrl : primary.code;
+    state.league = startCode;
+
+    select.innerHTML = leagues.map((l) =>
+      `<option value="${esc(l.code)}" ${l.code === startCode ? 'selected' : ''}>
+        ${esc(l.name)} (${l.fixtures} fixtures)</option>`).join('');
+    select.classList.remove('hidden');
+    select.onchange = () => switchLeague(select.value);
+  } catch (err) {
+    /* a single-league server has no /api/leagues concept worth failing over */
+  }
+}
+
 (async function init() {
   syncLabels();
+  await loadLeagueOptions();
   try {
-    const health = await (await fetch('/api/health')).json();
+    const health = await (await fetch(`/api/health?${params()}`)).json();
     state.health = health;
     renderStatus(health);
     $('disclaimer').textContent = health.disclaimer || '';

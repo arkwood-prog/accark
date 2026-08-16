@@ -71,6 +71,7 @@ class DataStore:
 
 
 STORE: DataStore | None = None
+STORES: dict[str, DataStore] = {}
 
 
 def _config_from_query(
@@ -162,9 +163,24 @@ ACCESS_TOKEN_ENV = "BETTINGEDGE_TOKEN"
 _COOKIE = "bettingedge_token"
 
 
-def create_app(store: DataStore, token: str | None = None) -> FastAPI:
+def create_app(store: DataStore, token: str | None = None,
+               extra_stores: dict[str, DataStore] | None = None) -> FastAPI:
+    """Build the app around a primary store, optionally with more leagues loaded.
+
+    Every additional league in `extra_stores` becomes selectable from any
+    endpoint via `?league=CODE`, and appears in the dashboard's league
+    dropdown. A single-store deployment (the common case, and every existing
+    test) behaves exactly as before — `extra_stores` defaults to nothing.
+    """
     app = FastAPI(title="bettingedge", version="1.0.0",
                   description="Data-driven football betting analysis")
+
+    all_stores: dict[str, DataStore] = {store.league: store, **(extra_stores or {})}
+
+    def resolve(league: str | None) -> DataStore:
+        if league and league.upper() in all_stores:
+            return all_stores[league.upper()]
+        return store
 
     token = token if token is not None else os.environ.get(ACCESS_TOKEN_ENV)
 
@@ -187,24 +203,47 @@ def create_app(store: DataStore, token: str | None = None) -> FastAPI:
                                     request.url.scheme == "https")
             return response
 
+    @app.get("/api/leagues")
+    def leagues_endpoint() -> list[dict]:
+        """Every league currently loaded in memory — what the dropdown offers.
+
+        Not every league this project *can* model, just the ones this
+        particular server was started with. Adding more is a restart with a
+        longer --league list, not a runtime action, because each one adds to
+        a live provider's monthly quota.
+        """
+        return [
+            {
+                "code": code,
+                "name": LEAGUES.get(code, code),
+                "matches": len(s.matches),
+                "fixtures": len(s.fixtures),
+                "is_primary": code == store.league,
+            }
+            for code, s in all_stores.items()
+        ]
+
     @app.get("/api/health")
-    def health() -> dict:
+    def health(league: str | None = Query(None)) -> dict:
+        s = resolve(league)
         return {
             "status": "ok",
-            "league": store.league,
-            "league_name": LEAGUES.get(store.league, store.league),
-            "source": store.source,
-            "matches": len(store.matches),
-            "fixtures": len(store.fixtures),
-            "history_from": store.matches[0].date.isoformat() if store.matches else None,
-            "history_to": store.matches[-1].date.isoformat() if store.matches else None,
-            "refreshed_at": store.refreshed_at.isoformat(timespec="seconds"),
-            "refresh_error": store.last_refresh_error,
+            "league": s.league,
+            "league_name": LEAGUES.get(s.league, s.league),
+            "source": s.source,
+            "matches": len(s.matches),
+            "fixtures": len(s.fixtures),
+            "history_from": s.matches[0].date.isoformat() if s.matches else None,
+            "history_to": s.matches[-1].date.isoformat() if s.matches else None,
+            "refreshed_at": s.refreshed_at.isoformat(timespec="seconds"),
+            "refresh_error": s.last_refresh_error,
+            "available_leagues": sorted(all_stores),
             "disclaimer": DISCLAIMER,
         }
 
     @app.get("/api/slate")
     def slate(
+        league: str | None = Query(None),
         bankroll: float = Query(1000.0, gt=0),
         kelly: float = Query(0.25, gt=0, le=1.0),
         min_edge: float = Query(0.03, ge=0.0, le=0.5),
@@ -214,7 +253,8 @@ def create_app(store: DataStore, token: str | None = None) -> FastAPI:
         min_leg_edge: float = Query(0.03, ge=0.0, le=0.5),
         previews: bool = Query(True),
     ) -> JSONResponse:
-        if not store.fixtures:
+        s = resolve(league)
+        if not s.fixtures:
             raise HTTPException(
                 status_code=404,
                 detail="No upcoming fixtures with prices are loaded. The free feed is "
@@ -222,30 +262,33 @@ def create_app(store: DataStore, token: str | None = None) -> FastAPI:
                        "supply your own fixtures CSV.",
             )
         key = f"{bankroll}|{kelly}|{min_edge}|{model_weight}|{half_life}|{max_legs}|{min_leg_edge}|{previews}"
-        with store.lock:
-            if key in store._slate_cache:
-                return JSONResponse(store._slate_cache[key])
+        with s.lock:
+            if key in s._slate_cache:
+                return JSONResponse(s._slate_cache[key])
         config = _config_from_query(bankroll, kelly, min_edge, model_weight, half_life,
                                     max_legs, min_leg_edge)
-        built = Engine(config).build_slate(store.matches, store.fixtures)
+        built = Engine(config).build_slate(s.matches, s.fixtures)
         payload = built.to_dict(include_contexts=previews)
-        payload["source"] = store.source
-        payload["league"] = store.league
-        payload["league_name"] = LEAGUES.get(store.league, store.league)
+        payload["source"] = s.source
+        payload["league"] = s.league
+        payload["league_name"] = LEAGUES.get(s.league, s.league)
         payload["disclaimer"] = DISCLAIMER
         payload["markdown"] = render_markdown(built)
-        with store.lock:
-            store._slate_cache[key] = payload
+        with s.lock:
+            s._slate_cache[key] = payload
         return JSONResponse(payload)
 
     @app.get("/api/ratings")
-    def ratings(half_life: float = Query(180.0, gt=1.0)) -> dict:
+    def ratings(league: str | None = Query(None),
+               half_life: float = Query(180.0, gt=1.0)) -> dict:
+        s = resolve(league)
         config = Config.from_dict({"model": {"half_life_days": half_life}})
-        model = Engine(config).fit(store.matches)
+        model = Engine(config).fit(s.matches)
         return model.to_dict()
 
     @app.get("/api/backtest")
     def backtest(
+        league: str | None = Query(None),
         kelly: float = Query(0.25, gt=0, le=1.0),
         min_edge: float = Query(0.03, ge=0.0, le=0.5),
         model_weight: float = Query(0.35, ge=0.0, le=1.0),
@@ -254,21 +297,22 @@ def create_app(store: DataStore, token: str | None = None) -> FastAPI:
         train_days: int = Query(400, ge=120),
         refit_every: int = Query(7, ge=1, le=60),
     ) -> JSONResponse:
-        if len(store.matches) < 200:
+        s = resolve(league)
+        if len(s.matches) < 200:
             raise HTTPException(status_code=400,
                                 detail="Not enough history loaded to backtest.")
         key = f"{kelly}|{min_edge}|{model_weight}|{half_life}|{bankroll}|{train_days}|{refit_every}"
-        with store.lock:
-            if key in store._backtest_cache:
-                return JSONResponse(store._backtest_cache[key])
+        with s.lock:
+            if key in s._backtest_cache:
+                return JSONResponse(s._backtest_cache[key])
         config = _config_from_query(bankroll, kelly, min_edge, model_weight, half_life, 5,
                                     min_edge)
-        result = run_backtest(store.matches, config=config, train_days=train_days,
+        result = run_backtest(s.matches, config=config, train_days=train_days,
                               refit_every_days=refit_every)
         payload = result.to_dict()
         payload["summary_text"] = result.summary()
-        with store.lock:
-            store._backtest_cache[key] = payload
+        with s.lock:
+            s._backtest_cache[key] = payload
         return JSONResponse(payload)
 
     @app.get("/")
@@ -406,30 +450,56 @@ def run_server(host: str = "127.0.0.1", port: int = 8000, league: str = "E0",
                refresh_minutes: int = 180) -> None:
     import uvicorn
 
-    global STORE
-    load_kwargs = dict(league=league, seasons=seasons, offline=offline,
-                       use_synthetic=use_synthetic, price_mode=price_mode,
-                       odds_provider=odds_provider, api_key=api_key,
-                       sport_key=sport_key, team_aliases=team_aliases)
-    STORE = load_store(**load_kwargs)
-    if not STORE.matches:
+    global STORE, STORES
+    # Comma-separated leagues each get their own fit and their own fixture
+    # feed — ratings from one division are not comparable to another — and
+    # each becomes a choice in the dashboard's league dropdown rather than
+    # being merged into one card, the way `recommend` merges them.
+    codes = [code.strip().upper() for code in league.split(",") if code.strip()] or ["E0"]
+    if use_synthetic:
+        codes = codes[:1]      # the synthetic league ignores the code entirely
+
+    STORES = {}
+    live_leagues_refreshing = 0
+    for code in codes:
+        load_kwargs = dict(league=code, seasons=seasons, offline=offline,
+                           use_synthetic=use_synthetic, price_mode=price_mode,
+                           odds_provider=odds_provider, api_key=api_key,
+                           sport_key=sport_key, team_aliases=team_aliases)
+        built_store = load_store(**load_kwargs)
+        STORES[built_store.league] = built_store
+        if refresh_minutes > 0:
+            start_refresh_loop(built_store, refresh_minutes, **load_kwargs)
+            if odds_provider != "footballdata":
+                live_leagues_refreshing += 1
+
+    if not any(s.matches for s in STORES.values()):
         raise SystemExit(
-            "No match history could be loaded. Check the league code, or start with "
-            "--synthetic to explore the app offline."
+            "No match history could be loaded for any requested league. Check the "
+            "league code(s), or start with --synthetic to explore the app offline."
         )
+
     if refresh_minutes > 0:
-        start_refresh_loop(STORE, refresh_minutes, **load_kwargs)
-        per_month = (24 * 60 / refresh_minutes) * 30
+        per_month = (24 * 60 / refresh_minutes) * 30 * max(live_leagues_refreshing, 1)
         note = f"refreshing every {refresh_minutes} min"
-        if odds_provider != "footballdata":
-            # The Odds API free tier is 500 requests/month. Burning through it
-            # silently at 3am is exactly the kind of thing worth saying out loud.
-            note += f" — about {per_month:.0f} provider calls/month"
+        if live_leagues_refreshing:
+            # The Odds API free tier is 500 requests/month, shared across every
+            # league loaded — burning through it silently at 3am is exactly the
+            # kind of thing worth saying out loud, and it scales with league count.
+            note += (f" — {live_leagues_refreshing} live league(s), about "
+                     f"{per_month:.0f} provider calls/month combined")
             if per_month > 450:
                 note += "  ** likely to exhaust a 500/month free tier **"
         print(note)
 
-    app = create_app(STORE, token=token)
+    primary_code = codes[0] if codes[0] in STORES else next(iter(STORES))
+    STORE = STORES[primary_code]
+    extra_stores = {code: s for code, s in STORES.items() if code != primary_code}
+    if extra_stores:
+        print(f"Leagues loaded: {', '.join(STORES)} — switch between them in the "
+              "dashboard's league dropdown.")
+
+    app = create_app(STORE, token=token, extra_stores=extra_stores)
     active_token = token if token is not None else os.environ.get(ACCESS_TOKEN_ENV)
     suffix = f"/?token={active_token}" if active_token else ""
 

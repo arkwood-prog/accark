@@ -63,8 +63,11 @@ from .verify import sharp_only, verify
 def _add_data_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--league", default="E0",
                         help="football-data.co.uk league code, or several separated by "
-                             "commas (e.g. E0,E1,EC). Each division is fitted separately; "
-                             "the card is combined. See `bettingedge leagues`.")
+                             "commas (e.g. E0,E1,EC). Each division is fitted separately. "
+                             "For `recommend`/`backtest`/`ratings` the results are combined "
+                             "into one card; for `serve` each league loads into its own "
+                             "store and the dashboard shows a dropdown to switch between "
+                             "them. See `bettingedge leagues`.")
     parser.add_argument("--seasons", type=int, default=4,
                         help="how many recent seasons of history to fit on (default: 4)")
     parser.add_argument("--results-csv", help="use your own results CSV instead of downloading")

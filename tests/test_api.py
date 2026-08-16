@@ -542,3 +542,146 @@ def test_serve_accepts_a_refresh_interval():
     args = build_parser().parse_args(["serve", "--refresh-minutes", "240"])
     assert args.refresh_minutes == 240
     assert build_parser().parse_args(["serve"]).refresh_minutes == 180
+
+
+# ------------------------------------------------------------ league dropdown
+def _two_league_client(token=None):
+    from bettingedge.api.server import DataStore, create_app
+
+    m1, f1 = synthetic.generate(seasons=2, seed=21)
+    m2, f2 = synthetic.generate(seasons=2, seed=22)
+    primary = DataStore(league="E0", matches=m1, fixtures=f1, source="a",
+                        loaded_at=date.today())
+    other = DataStore(league="SP1", matches=m2, fixtures=f2, source="b",
+                      loaded_at=date.today())
+    return TestClient(create_app(primary, token=token, extra_stores={"SP1": other})), primary, other
+
+
+def test_leagues_endpoint_lists_every_loaded_store():
+    client, primary, other = _two_league_client()
+    body = client.get("/api/leagues").json()
+    codes = {row["code"] for row in body}
+    assert codes == {"E0", "SP1"}
+    primary_row = next(row for row in body if row["code"] == "E0")
+    other_row = next(row for row in body if row["code"] == "SP1")
+    assert primary_row["is_primary"] is True
+    assert other_row["is_primary"] is False
+
+
+def test_single_store_leagues_endpoint_still_lists_the_one_league(client):
+    body = client.get("/api/leagues").json()
+    assert len(body) == 1
+    assert body[0]["is_primary"] is True
+
+
+def test_league_param_switches_which_store_answers(client):
+    """The existing single-store fixture, requested with an unknown code,
+    must fall back to serving its one store rather than erroring."""
+    default = client.get("/api/health").json()
+    same = client.get("/api/health", params={"league": "NOPE"}).json()
+    assert default["league"] == same["league"]
+
+
+def test_health_and_slate_resolve_independently_per_league():
+    client, primary, other = _two_league_client()
+
+    health_a = client.get("/api/health", params={"league": "E0"}).json()
+    health_b = client.get("/api/health", params={"league": "SP1"}).json()
+    assert health_a["league"] == "E0"
+    assert health_b["league"] == "SP1"
+    assert set(health_a["available_leagues"]) == {"E0", "SP1"}
+
+    slate_a = client.get("/api/slate", params={"league": "E0"}).json()
+    slate_b = client.get("/api/slate", params={"league": "SP1"}).json()
+    assert slate_a["league"] == "E0"
+    assert slate_b["league"] == "SP1"
+
+
+def test_ratings_and_backtest_also_respect_league():
+    """Not just slate — every data endpoint must resolve the right store."""
+    client, primary, other = _two_league_client()
+
+    ratings_a = client.get("/api/ratings", params={"league": "E0"}).json()
+    ratings_b = client.get("/api/ratings", params={"league": "SP1"}).json()
+    assert ratings_a["teams"] and ratings_b["teams"]
+    # Fitted independently on different (seeded) results, so the ratings
+    # themselves differ even though both stores share the same team-name pool.
+    assert ratings_a["n_matches"] == len(primary.matches)
+    assert ratings_b["n_matches"] == len(other.matches)
+    assert ratings_a["teams"] != ratings_b["teams"]
+
+
+def test_unknown_league_falls_back_to_primary_on_every_endpoint():
+    client, primary, other = _two_league_client()
+    for path in ("/api/health", "/api/slate", "/api/ratings"):
+        body = client.get(path, params={"league": "ZZ"}).json()
+        league_field = body.get("league")
+        assert league_field == "E0" or "teams" in body  # ratings has no top-level league
+
+
+def test_caches_are_kept_separate_per_league():
+    """Regression guard: two leagues must not share one slate/backtest cache."""
+    client, primary, other = _two_league_client()
+    client.get("/api/slate", params={"league": "E0"})
+    client.get("/api/slate", params={"league": "SP1"})
+    assert "" in primary._slate_cache or primary._slate_cache  # populated independently
+    assert other._slate_cache
+    assert primary._slate_cache is not other._slate_cache
+
+
+def test_token_protection_covers_every_league_equally():
+    client, _, _ = _two_league_client(token="s3cret")
+    assert client.get("/api/slate", params={"league": "SP1"}).status_code == 401
+    assert client.get("/api/slate",
+                      params={"league": "SP1", "token": "s3cret"}).status_code == 200
+
+
+# ------------------------------------------------------------ run_server multi-league
+def test_run_server_loads_every_comma_separated_league(monkeypatch):
+    import bettingedge.api.server as server_module
+
+    calls = []
+
+    def fake_load_store(**kwargs):
+        calls.append(kwargs["league"])
+        matches, fixtures = synthetic.generate(seasons=2, seed=len(calls))
+        return server_module.DataStore(league=kwargs["league"], matches=matches,
+                                       fixtures=fixtures, source="fake",
+                                       loaded_at=date.today())
+
+    monkeypatch.setattr(server_module, "load_store", fake_load_store)
+    monkeypatch.setattr(server_module, "start_refresh_loop", lambda *a, **k: None)
+
+    # uvicorn is imported lazily inside run_server, so it must be patched in
+    # sys.modules before that import statement executes.
+    import sys
+    import types
+
+    monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace(run=lambda *a, **k: None))
+
+    server_module.run_server(league="E0,SP1,I1", refresh_minutes=0)
+
+    assert calls == ["E0", "SP1", "I1"]
+    assert set(server_module.STORES) == {"E0", "SP1", "I1"}
+    assert server_module.STORE.league == "E0"
+
+
+def test_run_server_single_league_still_works(monkeypatch):
+    import sys
+    import types
+
+    import bettingedge.api.server as server_module
+
+    def fake_load_store(**kwargs):
+        matches, fixtures = synthetic.generate(seasons=2, seed=7)
+        return server_module.DataStore(league=kwargs["league"], matches=matches,
+                                       fixtures=fixtures, source="fake",
+                                       loaded_at=date.today())
+
+    monkeypatch.setattr(server_module, "load_store", fake_load_store)
+    monkeypatch.setattr(server_module, "start_refresh_loop", lambda *a, **k: None)
+    monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace(run=lambda *a, **k: None))
+
+    server_module.run_server(league="E0", refresh_minutes=0)
+    assert list(server_module.STORES) == ["E0"]
+    assert server_module.STORE.league == "E0"

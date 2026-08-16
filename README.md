@@ -461,6 +461,31 @@ Scan it, or type the address. Three things to know:
 If it will not connect, it is almost always one of: the firewall said no, or
 the phone is on mobile data rather than the wifi.
 
+### Multiple leagues
+
+`serve` (unlike `recommend`) can preload several divisions side by side, each
+in its own store with its own cache and its own background refresh:
+
+```bash
+bettingedge serve --league E0,E1,SP1,I1 --odds-provider theoddsapi --seasons 6 --lan
+```
+
+A league dropdown appears in the header the moment more than one is loaded —
+pick one and the whole dashboard (recommendations, fixtures, ratings,
+backtest) switches to that division without a restart. The choice is also
+reflected in the URL (`?league=SP1`), so a bookmark or home-screen icon
+reopens on the league you left it on. With a single league the dropdown stays
+hidden, exactly as before.
+
+**Quota cost.** Each additional league behind a live odds provider is a
+separate feed that gets polled on its own refresh cycle — the provider-call
+budget multiplies by the number of live leagues, not just the refresh
+interval. `serve` prints the combined estimate at startup so you can see
+whether a free-tier key (e.g. 500 calls/month on The Odds API) will cover it
+before you find out the hard way. `footballdata`-only leagues (no
+`--odds-provider theoddsapi`) don't count against that budget — only fixtures
+still come from the free CSV feed, so there's nothing to poll.
+
 **A real URL.** There is a `Dockerfile` and a `fly.toml`:
 
 ```bash

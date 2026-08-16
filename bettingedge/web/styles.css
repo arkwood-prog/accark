@@ -48,10 +48,17 @@ header {
 .logo span { color: var(--accent); }
 .tagline { color: var(--muted); font-size: 13px; }
 .status {
-  margin-left: auto; font-size: 12px; color: var(--muted);
+  font-size: 12px; color: var(--muted);
   font-family: var(--mono); text-align: right;
 }
 .status b { color: var(--text); font-weight: 600; }
+
+.league-select {
+  margin-left: auto; background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.league-select:hover { border-color: var(--accent-dim); }
 
 /* ---------- tabs ---------- */
 .tabs {
@@ -205,6 +212,7 @@ button.primary:disabled { opacity: .5; cursor: default; }
   .wrap { padding: 0 12px 60px; }
   .header-inner { padding: 12px; gap: 8px; }
   .status { margin-left: 0; text-align: left; font-size: 11px; width: 100%; }
+  .league-select { margin-left: 0; order: 3; width: 100%; }
   .logo { font-size: 17px; }
   .mark { width: 30px; height: 30px; }
   .tagline { font-size: 12px; }
