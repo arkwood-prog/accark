@@ -11,3 +11,9 @@ dist/
 slate.json
 slate.md
 .DS_Store
+
+# Holds real API keys — must never be committed. Copy .env.example instead.
+.env
+.env.*
+!.env.example
+odds-capture.json

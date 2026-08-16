@@ -9,8 +9,9 @@ from __future__ import annotations
 import os
 import secrets
 import threading
+import time
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,26 @@ class DataStore:
     lock: threading.Lock = field(default_factory=threading.Lock)
     _slate_cache: dict[str, Any] = field(default_factory=dict)
     _backtest_cache: dict[str, Any] = field(default_factory=dict)
+    refreshed_at: datetime = field(default_factory=datetime.now)
+    last_refresh_error: str | None = None
+
+    def replace_data(self, matches: list[Match], fixtures: list[Fixture],
+                     source: str) -> None:
+        """Swap in newly fetched data and drop everything derived from the old.
+
+        Holding the lock for the whole swap means a request in flight either
+        sees entirely the old data or entirely the new — never a slate priced
+        from fresh fixtures against a stale model.
+        """
+        with self.lock:
+            self.matches = matches
+            self.fixtures = fixtures
+            self.source = source
+            self.loaded_at = date.today()
+            self.refreshed_at = datetime.now()
+            self.last_refresh_error = None
+            self._slate_cache.clear()
+            self._backtest_cache.clear()
 
 
 STORE: DataStore | None = None
@@ -177,6 +198,8 @@ def create_app(store: DataStore, token: str | None = None) -> FastAPI:
             "fixtures": len(store.fixtures),
             "history_from": store.matches[0].date.isoformat() if store.matches else None,
             "history_to": store.matches[-1].date.isoformat() if store.matches else None,
+            "refreshed_at": store.refreshed_at.isoformat(timespec="seconds"),
+            "refresh_error": store.last_refresh_error,
             "disclaimer": DISCLAIMER,
         }
 
@@ -338,25 +361,74 @@ def load_store(league: str = "E0", seasons: int = 4, offline: bool = False,
                      source=source_label, loaded_at=date.today())
 
 
+def start_refresh_loop(store: DataStore, minutes: int, **load_kwargs) -> threading.Thread | None:
+    """Re-fetch fixtures and prices every `minutes`, in the background.
+
+    The point of this is that the dashboard is worth opening at any hour
+    without anyone having restarted anything. It is a daemon thread, so it
+    never keeps the process alive on its own.
+
+    A failed refresh is deliberately non-fatal: the previous data stays
+    served and the error is surfaced on /api/health. Odds going stale is a
+    far better outcome than the dashboard going dark because a provider
+    had a bad minute.
+    """
+    if minutes <= 0:
+        return None
+
+    def loop() -> None:
+        while True:
+            time.sleep(minutes * 60)
+            try:
+                fresh = load_store(**load_kwargs)
+                if fresh.matches:
+                    store.replace_data(fresh.matches, fresh.fixtures, fresh.source)
+                    print(f"[refresh] {datetime.now():%H:%M} — {len(fresh.fixtures)} "
+                          f"fixtures, {len(fresh.matches)} matches")
+                else:
+                    raise RuntimeError("refresh returned no match history")
+            except Exception as exc:
+                store.last_refresh_error = f"{datetime.now():%Y-%m-%d %H:%M} — {exc}"
+                print(f"[refresh] failed, keeping previous data: {exc}")
+
+    thread = threading.Thread(target=loop, daemon=True, name="bettingedge-refresh")
+    thread.start()
+    return thread
+
+
 def run_server(host: str = "127.0.0.1", port: int = 8000, league: str = "E0",
                seasons: int = 4, offline: bool = False, use_synthetic: bool = False,
                config: Config | None = None,
                price_mode: str = DEFAULT_PRICE_MODE, token: str | None = None,
                odds_provider: str = "footballdata", api_key: str | None = None,
                sport_key: str | None = None,
-               team_aliases: dict[str, str] | None = None) -> None:
+               team_aliases: dict[str, str] | None = None,
+               refresh_minutes: int = 180) -> None:
     import uvicorn
 
     global STORE
-    STORE = load_store(league=league, seasons=seasons, offline=offline,
+    load_kwargs = dict(league=league, seasons=seasons, offline=offline,
                        use_synthetic=use_synthetic, price_mode=price_mode,
                        odds_provider=odds_provider, api_key=api_key,
                        sport_key=sport_key, team_aliases=team_aliases)
+    STORE = load_store(**load_kwargs)
     if not STORE.matches:
         raise SystemExit(
             "No match history could be loaded. Check the league code, or start with "
             "--synthetic to explore the app offline."
         )
+    if refresh_minutes > 0:
+        start_refresh_loop(STORE, refresh_minutes, **load_kwargs)
+        per_month = (24 * 60 / refresh_minutes) * 30
+        note = f"refreshing every {refresh_minutes} min"
+        if odds_provider != "footballdata":
+            # The Odds API free tier is 500 requests/month. Burning through it
+            # silently at 3am is exactly the kind of thing worth saying out loud.
+            note += f" — about {per_month:.0f} provider calls/month"
+            if per_month > 450:
+                note += "  ** likely to exhaust a 500/month free tier **"
+        print(note)
+
     app = create_app(STORE, token=token)
     active_token = token if token is not None else os.environ.get(ACCESS_TOKEN_ENV)
     suffix = f"/?token={active_token}" if active_token else ""

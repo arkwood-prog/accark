@@ -423,16 +423,55 @@ document.querySelectorAll('.tab').forEach((tab) => {
 ['bankroll', 'kelly', 'minedge', 'weight', 'halflife', 'maxlegs'].forEach((id) =>
   $(id).addEventListener('input', onControlChange));
 
+/** "3 min ago" — so it is obvious at a glance whether this is current. */
+function freshness(isoTimestamp) {
+  if (!isoTimestamp) return '';
+  const minutes = Math.max(0, Math.round((Date.now() - new Date(isoTimestamp)) / 60000));
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+function renderStatus(health) {
+  const age = freshness(health.refreshed_at);
+  // A refresh that has been failing is exactly what you would want to know
+  // before trusting a price, so it is called out rather than buried.
+  const stale = health.refresh_error
+    ? `<br><span style="color:var(--bad)">refresh failing — prices may be stale</span>`
+    : '';
+  $('status').innerHTML = `<b>${esc(health.league_name)}</b><br>${health.matches} matches`
+    + ` · ${health.fixtures} fixtures<br><span style="color:var(--dim)">${esc(health.source)}`
+    + (age ? ` · updated ${age}` : '') + `</span>${stale}`;
+}
+
+async function pollHealth() {
+  try {
+    const health = await (await fetch('/api/health')).json();
+    const previous = state.health && state.health.refreshed_at;
+    state.health = health;
+    renderStatus(health);
+    // The server refreshed underneath us — pull the new card in so a phone
+    // left open overnight is not showing yesterday's fixtures.
+    if (previous && health.refreshed_at !== previous) loadSlate();
+  } catch (err) {
+    /* transient; the next poll will pick it up */
+  }
+}
+
 (async function init() {
   syncLabels();
   try {
     const health = await (await fetch('/api/health')).json();
     state.health = health;
-    $('status').innerHTML = `<b>${esc(health.league_name)}</b><br>${health.matches} matches`
-      + ` · ${health.fixtures} fixtures<br><span style="color:var(--dim)">${esc(health.source)}</span>`;
+    renderStatus(health);
     $('disclaimer').textContent = health.disclaimer || '';
   } catch (err) {
     $('status').textContent = 'backend unreachable';
   }
   loadSlate();
+  // Cheap: one small JSON request a minute, and it keeps the age indicator
+  // honest on a phone that has been sitting open.
+  setInterval(pollHealth, 60000);
 })();

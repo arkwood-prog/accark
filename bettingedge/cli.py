@@ -17,6 +17,19 @@ import sys
 from datetime import date
 from pathlib import Path
 
+# Load ODDS_API_KEY, BETTINGEDGE_TOKEN etc. from a .env file next to the repo,
+# if one exists, before anything else reads os.environ. This is what lets a
+# key survive between PowerShell/terminal sessions without retyping it —
+# `$env:` only lasts for the window it was set in, a .env file does not.
+# Never overrides a variable the shell already has set (override=False is the
+# default), so an explicit `$env:` still wins if both are present.
+try:
+    from dotenv import find_dotenv, load_dotenv
+
+    load_dotenv(find_dotenv(usecwd=True))
+except ImportError:
+    pass
+
 from .backtest.engine import run_backtest
 from .config import Config
 from .data import synthetic
@@ -420,7 +433,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
                odds_provider=getattr(args, "odds_provider", "footballdata"),
                api_key=getattr(args, "api_key", None),
                sport_key=getattr(args, "sport_key", None),
-               team_aliases=aliases)
+               team_aliases=aliases,
+               refresh_minutes=getattr(args, "refresh_minutes", 180))
     return 0
 
 
@@ -480,6 +494,96 @@ Replay it anywhere, with no network:
 
 A capture is a snapshot: use it to check parsing, team matching and pricing,
 not to place bets. Prices go stale within minutes.""")
+    return 0
+
+
+def cmd_autostart(args: argparse.Namespace) -> int:
+    """Install (or remove) a launcher that starts the dashboard at login.
+
+    The goal is a dashboard that is simply always there: reboot the machine,
+    walk away, and the phone URL works later without anyone opening a
+    terminal.
+    """
+    import os
+    import platform
+
+    repo = Path(__file__).resolve().parent.parent
+    system = platform.system()
+
+    if system != "Windows":
+        print(f"\nAutomatic install is Windows-only for now (this is {system}).")
+        print("On macOS use a LaunchAgent, on Linux a systemd --user service, "
+              "running:\n")
+        print(f"  cd {repo} && bettingedge serve {args.serve_args}\n")
+        return 1
+
+    startup = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Startup"
+    launcher = startup / "bettingedge.bat"
+
+    if args.remove:
+        if launcher.exists():
+            launcher.unlink()
+            print(f"\nRemoved {launcher}\nThe dashboard will no longer start at login.")
+        else:
+            print("\nNothing to remove — no launcher was installed.")
+        return 0
+
+    startup.mkdir(parents=True, exist_ok=True)
+    # `start "" /min` keeps the window minimised rather than hidden: a hidden
+    # server with no way to see errors is worse than a taskbar button.
+    launcher.write_text(
+        "@echo off\r\n"
+        f"cd /d \"{repo}\"\r\n"
+        f"start \"bettingedge\" /min cmd /c \"bettingedge serve {args.serve_args}\"\r\n",
+        encoding="utf-8",
+    )
+    print(f"""
+Installed {launcher}
+
+The dashboard now starts automatically when you log in, minimised to the
+taskbar, and refreshes its own data in the background.
+
+  Command it runs : bettingedge serve {args.serve_args}
+  Working folder  : {repo}
+
+Two things it still depends on:
+  * The PC being switched on and logged in. Nothing runs while it is off.
+  * Your keys living in a .env file in that folder, not in $env: variables —
+    those vanish when a window closes. Run `bettingedge env` to check.
+
+Undo any time with:  bettingedge autostart --remove
+""")
+    return 0
+
+
+def cmd_env(args: argparse.Namespace) -> int:
+    """Show which settings were found, without ever printing a secret."""
+    import os
+
+    repo = Path(__file__).resolve().parent.parent
+    env_file = repo / ".env"
+
+    print(f"\n.env file: {env_file}")
+    print("  found" if env_file.exists() else
+          "  MISSING — copy .env.example to .env and put your key in it")
+
+    print("\nSettings visible to the app right now:")
+    for name, what in (("ODDS_API_KEY", "live odds"),
+                       ("API_FOOTBALL_KEY", "second provider"),
+                       ("BETTINGEDGE_TOKEN", "dashboard password")):
+        raw = os.environ.get(name)
+        if raw:
+            # Never print a key. Enough to confirm identity, not to reuse it.
+            shown = f"set, {len(raw)} chars, ends ...{raw[-4:]}" if len(raw) > 8 else "set"
+        else:
+            shown = "not set"
+        print(f"  {name:<20} {shown:<34} ({what})")
+
+    if not env_file.exists():
+        print("\nTo create it:")
+        print(f"  cd {repo}")
+        print("  Copy-Item .env.example .env      # then edit .env and paste your key")
+    print()
     return 0
 
 
@@ -626,6 +730,10 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", type=int, default=8000)
     serve.add_argument("--token", help="require this token to access the dashboard "
                                        "(or set BETTINGEDGE_TOKEN)")
+    serve.add_argument("--refresh-minutes", type=int, default=180,
+                       help="re-fetch fixtures and prices this often, in the "
+                            "background (default: 180). 0 disables it. Below ~90 "
+                            "will exhaust a free 500/month provider quota.")
     serve.set_defaults(func=cmd_serve)
 
     leagues = subparsers.add_parser("leagues", help="list supported league codes")
@@ -652,6 +760,20 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument("--out", default="odds-capture.json",
                          help="where to write the payload (default: odds-capture.json)")
     capture.set_defaults(func=cmd_capture)
+
+    autostart = subparsers.add_parser(
+        "autostart", help="start the dashboard automatically when you log in")
+    autostart.add_argument("--serve-args",
+                           default="--league E0 --odds-provider theoddsapi "
+                                   "--seasons 6 --lan",
+                           help="arguments passed to `bettingedge serve` at login")
+    autostart.add_argument("--remove", action="store_true",
+                           help="uninstall the launcher")
+    autostart.set_defaults(func=cmd_autostart)
+
+    env_cmd = subparsers.add_parser(
+        "env", help="show which API keys and settings the app can see")
+    env_cmd.set_defaults(func=cmd_env)
 
     providers = subparsers.add_parser(
         "providers", help="list live odds sources and how to set them up")

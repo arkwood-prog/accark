@@ -452,3 +452,93 @@ def test_cmd_serve_parses_live_provider_flags():
     assert args.odds_provider == "theoddsapi"
     assert args.api_key == "abc123"
     assert args.lan is True
+
+
+# ------------------------------------------------------------ auto refresh
+def _store_with(fixtures_count: int, source: str = "initial"):
+    from datetime import date as _date
+
+    from bettingedge.api.server import DataStore
+    from bettingedge.data.schema import Fixture, Match
+
+    matches = [Match(date=_date(2026, 1, 1), league="E0", home="Arsenal",
+                     away="Chelsea", home_goals=1, away_goals=0)]
+    fixtures = [Fixture(date=_date(2026, 9, i + 1), league="E0", home="Arsenal",
+                        away="Chelsea", odds={"1X2:H": 2.0, "1X2:D": 3.4, "1X2:A": 3.8})
+                for i in range(fixtures_count)]
+    return DataStore(league="E0", matches=matches, fixtures=fixtures,
+                     source=source, loaded_at=_date.today())
+
+
+def test_replace_data_swaps_content_and_drops_derived_caches():
+    store = _store_with(1)
+    store._slate_cache["old"] = {"x": 1}
+    store._backtest_cache["old"] = {"y": 2}
+    before = store.refreshed_at
+
+    fresh = _store_with(3, source="refreshed")
+    store.replace_data(fresh.matches, fresh.fixtures, fresh.source)
+
+    assert len(store.fixtures) == 3
+    assert store.source == "refreshed"
+    assert store._slate_cache == {} and store._backtest_cache == {}
+    assert store.refreshed_at >= before
+
+
+def test_refresh_loop_picks_up_new_fixtures(monkeypatch):
+    import time as _time
+
+    import bettingedge.api.server as server_module
+
+    store = _store_with(1)
+    monkeypatch.setattr(server_module, "load_store",
+                        lambda **kwargs: _store_with(4, source="live"))
+
+    server_module.start_refresh_loop(store, minutes=1 / 120)   # ~0.5s
+    deadline = _time.time() + 6
+    while _time.time() < deadline and len(store.fixtures) != 4:
+        _time.sleep(0.1)
+
+    assert len(store.fixtures) == 4, "refresh loop never replaced the data"
+    assert store.last_refresh_error is None
+
+
+def test_a_failed_refresh_keeps_serving_the_previous_data(monkeypatch):
+    """Stale odds beat a dashboard that goes blank because a provider blipped."""
+    import time as _time
+
+    import bettingedge.api.server as server_module
+
+    store = _store_with(2)
+
+    def explode(**kwargs):
+        raise RuntimeError("provider unreachable")
+
+    monkeypatch.setattr(server_module, "load_store", explode)
+    server_module.start_refresh_loop(store, minutes=1 / 120)
+
+    deadline = _time.time() + 6
+    while _time.time() < deadline and store.last_refresh_error is None:
+        _time.sleep(0.1)
+
+    assert len(store.fixtures) == 2, "old data must survive a failed refresh"
+    assert store.last_refresh_error is not None
+    assert "provider unreachable" in store.last_refresh_error
+
+
+def test_refresh_can_be_disabled():
+    import bettingedge.api.server as server_module
+
+    assert server_module.start_refresh_loop(_store_with(1), minutes=0) is None
+
+
+def test_health_reports_freshness(client):
+    body = client.get("/api/health").json()
+    assert "refreshed_at" in body
+    assert body["refresh_error"] is None
+
+
+def test_serve_accepts_a_refresh_interval():
+    args = build_parser().parse_args(["serve", "--refresh-minutes", "240"])
+    assert args.refresh_minutes == 240
+    assert build_parser().parse_args(["serve"]).refresh_minutes == 180
