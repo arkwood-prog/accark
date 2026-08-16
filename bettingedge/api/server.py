@@ -280,7 +280,11 @@ def create_app(store: DataStore, token: str | None = None) -> FastAPI:
 
 def load_store(league: str = "E0", seasons: int = 4, offline: bool = False,
                use_synthetic: bool = False,
-               price_mode: str = DEFAULT_PRICE_MODE) -> DataStore:
+               price_mode: str = DEFAULT_PRICE_MODE,
+               odds_provider: str = "footballdata",
+               api_key: str | None = None,
+               sport_key: str | None = None,
+               team_aliases: dict[str, str] | None = None) -> DataStore:
     if use_synthetic:
         matches, fixtures = synthetic.generate(seasons=max(2, seasons))
         return DataStore(league="SYN", matches=matches, fixtures=fixtures,
@@ -292,26 +296,62 @@ def load_store(league: str = "E0", seasons: int = 4, offline: bool = False,
     print(f"Loading {league} history for seasons {', '.join(codes)} ...")
     matches = source.results(league, codes)
     print(f"  {len(matches)} matches")
-    try:
-        fixtures = source.fixtures([league])
-        print(f"  {len(fixtures)} upcoming fixtures with prices")
-    except Exception as exc:
-        print(f"  ! could not load fixtures: {exc}")
-        fixtures = []
+
+    if odds_provider == "footballdata":
+        try:
+            fixtures = source.fixtures([league])
+            print(f"  {len(fixtures)} upcoming fixtures with prices")
+        except Exception as exc:
+            print(f"  ! could not load fixtures: {exc}")
+            fixtures = []
+        source_label = f"football-data.co.uk ({price_mode} prices)"
+    else:
+        # Local import avoids a hard dependency on the providers package for
+        # everyone who never asks for a live source.
+        from ..data.providers import PROVIDER_INFO, get_provider
+        from ..data.teams import reconcile_fixtures
+
+        info = PROVIDER_INFO[odds_provider]
+        print(f"Loading live prices from {info.title} ...")
+        extra = {"sport_key": sport_key} if odds_provider == "theoddsapi" and sport_key else {}
+        try:
+            provider = get_provider(odds_provider, api_key=api_key, **extra)
+            fixtures = provider.fixtures(league)
+            print(f"  {len(fixtures)} upcoming fixtures with prices")
+        except Exception as exc:
+            print(f"  ! could not load live fixtures: {exc}")
+            fixtures = []
+
+        if fixtures:
+            # A live provider spells teams differently than the results this
+            # model is fitted on. Skipping this reconciliation is exactly the
+            # bug that shipped first: fixtures loaded, matched nothing, and
+            # 'serve' silently fell back to looking empty.
+            known = {m.home for m in matches} | {m.away for m in matches}
+            fixtures, report = reconcile_fixtures(fixtures, known,
+                                                   extra_aliases=team_aliases)
+            if report.dropped_fixtures or report.fuzzy or report.unresolved:
+                print(report.render())
+        source_label = f"{info.title} (live)"
+
     return DataStore(league=league, matches=matches, fixtures=fixtures,
-                     source=f"football-data.co.uk ({price_mode} prices)",
-                     loaded_at=date.today())
+                     source=source_label, loaded_at=date.today())
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8000, league: str = "E0",
                seasons: int = 4, offline: bool = False, use_synthetic: bool = False,
                config: Config | None = None,
-               price_mode: str = DEFAULT_PRICE_MODE, token: str | None = None) -> None:
+               price_mode: str = DEFAULT_PRICE_MODE, token: str | None = None,
+               odds_provider: str = "footballdata", api_key: str | None = None,
+               sport_key: str | None = None,
+               team_aliases: dict[str, str] | None = None) -> None:
     import uvicorn
 
     global STORE
     STORE = load_store(league=league, seasons=seasons, offline=offline,
-                       use_synthetic=use_synthetic, price_mode=price_mode)
+                       use_synthetic=use_synthetic, price_mode=price_mode,
+                       odds_provider=odds_provider, api_key=api_key,
+                       sport_key=sport_key, team_aliases=team_aliases)
     if not STORE.matches:
         raise SystemExit(
             "No match history could be loaded. Check the league code, or start with "

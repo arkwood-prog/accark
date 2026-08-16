@@ -408,10 +408,19 @@ def cmd_serve(args: argparse.Namespace) -> int:
     from .api.server import run_server
 
     host = "0.0.0.0" if getattr(args, "lan", False) else args.host
+    try:
+        aliases = parse_alias_arguments(getattr(args, "team_alias", None))
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     run_server(host=host, port=args.port, league=args.league, seasons=args.seasons,
                offline=args.offline, use_synthetic=args.synthetic,
                config=_config_from(args), price_mode=args.price_mode,
-               token=getattr(args, "token", None))
+               token=getattr(args, "token", None),
+               odds_provider=getattr(args, "odds_provider", "footballdata"),
+               api_key=getattr(args, "api_key", None),
+               sport_key=getattr(args, "sport_key", None),
+               team_aliases=aliases)
     return 0
 
 

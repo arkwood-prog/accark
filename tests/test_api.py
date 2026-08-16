@@ -342,3 +342,113 @@ def test_the_icons_are_square_and_the_expected_size():
         assert data[:8] == b"\x89PNG\r\n\x1a\n"
         width, height = struct.unpack(">II", data[16:24])
         assert (width, height) == (size, size)
+
+
+# ------------------------------------------------------------ live provider wiring
+def test_load_store_actually_uses_the_requested_odds_provider(monkeypatch):
+    """Regression test for a real bug: `serve --odds-provider theoddsapi` used
+    to parse fine but silently fall back to the free feed, because load_store
+    never accepted or used the provider argument at all."""
+    from datetime import date as _date
+
+    from bettingedge.api.server import load_store
+    from bettingedge.data.schema import Fixture, Match
+
+    fake_matches = [
+        Match(date=_date(2026, 1, 1), league="E0", home="Arsenal", away="Chelsea",
+              home_goals=2, away_goals=1),
+    ]
+    fake_fixture = Fixture(date=_date(2026, 9, 1), league="E0", home="Arsenal",
+                           away="Chelsea", odds={"1X2:H": 2.0, "1X2:D": 3.4, "1X2:A": 3.8})
+
+    class FakeProvider:
+        name = "theoddsapi"
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def fixtures(self, league, days_ahead=7):
+            assert league == "E0"
+            return [fake_fixture]
+
+    import bettingedge.api.server as server_module
+
+    monkeypatch.setattr(server_module.FootballDataUK, "results",
+                        lambda self, league, seasons: fake_matches)
+    monkeypatch.setattr("bettingedge.data.providers.get_provider",
+                        lambda name, **kwargs: FakeProvider(**kwargs))
+
+    store = load_store(league="E0", seasons=2, odds_provider="theoddsapi",
+                       api_key="test-key")
+
+    assert store.source.startswith("The Odds API")
+    assert len(store.fixtures) == 1
+    assert store.fixtures[0].home == "Arsenal"
+
+
+def test_load_store_defaults_to_the_free_feed_when_no_provider_given(monkeypatch):
+    from datetime import date as _date
+
+    from bettingedge.api.server import load_store
+    from bettingedge.data.schema import Fixture, Match
+
+    fake_matches = [Match(date=_date(2026, 1, 1), league="E0", home="Arsenal",
+                          away="Chelsea", home_goals=1, away_goals=0)]
+    fake_fixture = Fixture(date=_date(2026, 9, 1), league="E0", home="Arsenal",
+                           away="Chelsea", odds={"1X2:H": 2.0, "1X2:D": 3.4, "1X2:A": 3.8})
+
+    import bettingedge.api.server as server_module
+
+    monkeypatch.setattr(server_module.FootballDataUK, "results",
+                        lambda self, league, seasons: fake_matches)
+    monkeypatch.setattr(server_module.FootballDataUK, "fixtures",
+                        lambda self, leagues: [fake_fixture])
+
+    store = load_store(league="E0", seasons=2)
+    assert "football-data.co.uk" in store.source
+    assert len(store.fixtures) == 1
+
+
+def test_load_store_reconciles_live_provider_team_names(monkeypatch):
+    """A live provider spells teams differently; unresolved names must be
+    dropped rather than silently priced off league-average ratings."""
+    from datetime import date as _date
+
+    from bettingedge.api.server import load_store
+    from bettingedge.data.schema import Fixture, Match
+
+    fake_matches = [Match(date=_date(2026, 1, 1), league="E0", home="Man United",
+                          away="Fulham", home_goals=2, away_goals=0)]
+    provider_fixture = Fixture(date=_date(2026, 9, 1), league="E0",
+                               home="Manchester United", away="Fulham",
+                               odds={"1X2:H": 2.0, "1X2:D": 3.4, "1X2:A": 3.8})
+    unresolvable_fixture = Fixture(date=_date(2026, 9, 1), league="E0",
+                                   home="Some Made Up FC", away="Fulham",
+                                   odds={"1X2:H": 2.0, "1X2:D": 3.4, "1X2:A": 3.8})
+
+    class FakeProvider:
+        def __init__(self, **kwargs):
+            pass
+
+        def fixtures(self, league, days_ahead=7):
+            return [provider_fixture, unresolvable_fixture]
+
+    import bettingedge.api.server as server_module
+
+    monkeypatch.setattr(server_module.FootballDataUK, "results",
+                        lambda self, league, seasons: fake_matches)
+    monkeypatch.setattr("bettingedge.data.providers.get_provider",
+                        lambda name, **kwargs: FakeProvider(**kwargs))
+
+    store = load_store(league="E0", seasons=2, odds_provider="theoddsapi")
+    assert len(store.fixtures) == 1
+    assert store.fixtures[0].home == "Man United"      # rewritten to match the model
+
+
+def test_cmd_serve_parses_live_provider_flags():
+    args = build_parser().parse_args(
+        ["serve", "--league", "E0", "--odds-provider", "theoddsapi",
+         "--api-key", "abc123", "--lan"])
+    assert args.odds_provider == "theoddsapi"
+    assert args.api_key == "abc123"
+    assert args.lan is True
