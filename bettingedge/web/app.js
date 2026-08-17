@@ -124,7 +124,10 @@ function slipCard(slip, index) {
 /* Open/closed state for the collapsible panels, remembered across reloads so a
    slider nudge (which re-renders everything) does not re-collapse the card you
    were reading. */
-const OPEN_KEY = 'bettingedge.open';
+// Versioned: bumping the key discards state saved under an older set of
+// defaults, so a change to what starts open is not silently overridden by a
+// stale entry from a previous build.
+const OPEN_KEY = 'bettingedge.open.v2';
 let openPanels = {};
 try { openPanels = JSON.parse(localStorage.getItem(OPEN_KEY) || '{}') || {}; } catch { openPanels = {}; }
 
@@ -138,7 +141,9 @@ function setOpen(key, value) {
 }
 
 /** A collapsible group of slips. `key` persists its state, `openByDefault`
-    decides the first visit — singles matter most, so only they start open. */
+    decides the first visit. Every category starts shut: the headers carry the
+    bet count and staked subtotal, so the whole card fits on one phone screen
+    and you open only the part you want to read. */
 function section(key, title, note, slips, emptyText, openByDefault) {
   const body = slips.length
     ? slips.map(slipCard).join('')
@@ -191,7 +196,7 @@ function renderBets() {
       + 'with reality — the bookmaker\'s margin is charged once.',
       s.singles,
       'No single cleared the edge threshold. Lower "Min edge", or accept that this card has '
-      + 'no value in it.', true)
+      + 'no value in it.', false)
     + section('doubles', 'Doubles', multiNote, doubles, emptyMulti, false)
     + section('trebles', 'Trebles', multiNote, trebles, emptyMulti, false)
     + section('accas', 'Accumulators',
