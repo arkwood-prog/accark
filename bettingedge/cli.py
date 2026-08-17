@@ -27,6 +27,13 @@ try:
     from dotenv import find_dotenv, load_dotenv
 
     load_dotenv(find_dotenv(usecwd=True))
+    # find_dotenv only walks *upward* from the working directory, so running
+    # `bettingedge ...` from your home folder never sees the .env sitting in
+    # the repo one level down — and `bettingedge env` would report the file as
+    # "found" (it looks beside the package) while every key read "not set".
+    # Load the repo's own .env as well so the two agree. override=False keeps
+    # the precedence order: shell variable, then cwd .env, then this one.
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 except ImportError:
     pass
 
