@@ -180,6 +180,26 @@ def _is_public_asset(path: str) -> bool:
     return path in _PUBLIC_PATHS or _PUBLIC_ICON.fullmatch(path) is not None
 
 
+def _web_file(name: str, media_type: str) -> FileResponse:
+    """Serve a dashboard file that must never be served stale.
+
+    FileResponse sets ETag and Last-Modified but no Cache-Control, and with no
+    explicit freshness a browser is free to guess one — mobile browsers guess
+    generously, and a phone will happily run yesterday's app.js for hours
+    without ever asking whether it changed. After a `git pull` that shows up as
+    a partial upgrade: the new index.html renders while the old JavaScript still
+    drives it, which looks like a broken feature rather than a stale cache.
+
+    ``no-cache`` does not mean "do not store" — it means "revalidate before
+    using". FileResponse sends an ETag but does not itself answer conditional
+    requests with a 304, so revalidation refetches the file: about 50KB for the
+    whole dashboard, which is nothing over a LAN and buys correctness that
+    matters every time you pull.
+    """
+    return FileResponse(WEB_DIR / name, media_type=media_type,
+                        headers={"Cache-Control": "no-cache"})
+
+
 def _tag_current_squad(model_payload: dict, matches: list[Match]) -> dict:
     """Mark which rated teams are in the division now.
 
@@ -363,30 +383,29 @@ def create_app(store: DataStore, token: str | None = None,
 
     @app.get("/")
     def index() -> FileResponse:
-        return FileResponse(WEB_DIR / "index.html")
+        return _web_file("index.html", "text/html")
 
     @app.get("/app.js")
     def script() -> FileResponse:
-        return FileResponse(WEB_DIR / "app.js", media_type="application/javascript")
+        return _web_file("app.js", "application/javascript")
 
     @app.get("/styles.css")
     def styles() -> FileResponse:
-        return FileResponse(WEB_DIR / "styles.css", media_type="text/css")
+        return _web_file("styles.css", "text/css")
 
     @app.get("/logo.svg")
     def logo() -> FileResponse:
-        return FileResponse(WEB_DIR / "logo.svg", media_type="image/svg+xml")
+        return _web_file("logo.svg", "image/svg+xml")
 
     @app.get("/manifest.json")
     def manifest() -> FileResponse:
-        return FileResponse(WEB_DIR / "manifest.json", media_type="application/manifest+json")
+        return _web_file("manifest.json", "application/manifest+json")
 
     @app.get("/icon-{size}.png")
     def icon(size: int) -> FileResponse:
-        path = WEB_DIR / f"icon-{size}.png"
-        if not path.exists():
+        if not (WEB_DIR / f"icon-{size}.png").exists():
             raise HTTPException(status_code=404, detail="no icon at that size")
-        return FileResponse(path, media_type="image/png")
+        return _web_file(f"icon-{size}.png", "image/png")
 
     return app
 

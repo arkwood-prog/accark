@@ -856,3 +856,21 @@ def test_the_settings_panel_and_bet_groups_are_collapsible():
     # Each category is its own keyed panel.
     for key in ("'singles'", "'doubles'", "'trebles'", "'accas'", "'samegame'"):
         assert key in js, key
+
+
+# ------------------------------------------------------------ cache freshness
+def test_dashboard_files_are_never_served_stale(client):
+    """A phone must not keep running yesterday's app.js after a pull.
+
+    FileResponse sets ETag/Last-Modified but no Cache-Control, and with no
+    explicit freshness a browser invents one — which showed up as index.html
+    updating while the old JavaScript kept driving it.
+    """
+    for path in ("/", "/app.js", "/styles.css", "/manifest.json", "/icon-192.png"):
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert response.headers.get("cache-control") == "no-cache", path
+
+
+def test_the_index_declares_a_html_content_type(client):
+    assert client.get("/").headers["content-type"].startswith("text/html")
