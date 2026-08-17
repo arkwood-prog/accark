@@ -817,3 +817,42 @@ def test_tagging_never_drops_a_team_from_the_fit():
     fitted = {t for m in matches for t in (m.home, m.away)}
     assert {e["team"] for e in payload["teams"]} == fitted
     assert payload["n_matches"] == len(matches)
+
+
+# ------------------------------------------------ collapsible bet categories
+def test_multis_carry_the_leg_counts_the_dashboard_groups_by(client):
+    """The bets tab splits multis into doubles/trebles/accas by leg count."""
+    body = client.get("/api/slate", params={"min_edge": 0.005, "max_legs": 5}).json()
+    assert body["multis"], "need multis to check the grouping"
+    for slip in body["multis"]:
+        assert len(slip["legs"]) >= 2
+    counts = {len(slip["legs"]) for slip in body["multis"]}
+    assert counts <= {2, 3, 4, 5}, "max_legs=5 must not yield a 6-fold"
+    # Every multi lands in exactly one of the three groups the UI renders.
+    grouped = sum(1 for s in body["multis"]
+                  if len(s["legs"]) == 2 or len(s["legs"]) == 3 or len(s["legs"]) >= 4)
+    assert grouped == len(body["multis"])
+
+
+def test_every_slip_reports_a_stake_for_the_group_subtotals(client):
+    """Each collapsed category header shows its own staked total."""
+    body = client.get("/api/slate", params={"min_edge": 0.005}).json()
+    for group in ("singles", "multis", "same_game"):
+        for slip in body[group]:
+            assert isinstance(slip["stake"], (int, float))
+            assert slip["stake"] >= 0
+
+
+def test_the_settings_panel_and_bet_groups_are_collapsible():
+    """Guards the markup the collapse behaviour depends on."""
+    web = Path(__file__).resolve().parent.parent / "bettingedge" / "web"
+    html = (web / "index.html").read_text(encoding="utf-8")
+    js = (web / "app.js").read_text(encoding="utf-8")
+    # Controls live in a <details> keyed for state, with the inputs still inside.
+    assert '<details class="panel" id="controls">' in html
+    assert 'id="controls-summary"' in html
+    for control in ("bankroll", "kelly", "minedge", "weight", "halflife", "maxlegs"):
+        assert f'id="{control}"' in html, control
+    # Each category is its own keyed panel.
+    for key in ("'singles'", "'doubles'", "'trebles'", "'accas'", "'samegame'"):
+        assert key in js, key

@@ -39,7 +39,12 @@
     <button class="tab" data-tab="method">Method</button>
   </nav>
 
-  <section class="controls" id="controls">
+  <details class="panel" id="controls">
+    <summary>
+      <span class="panel-title">Settings</span>
+      <span class="panel-summary" id="controls-summary"></span>
+    </summary>
+    <section class="controls">
     <div class="control">
       <label for="bankroll">Bankroll</label>
       <input type="number" id="bankroll" value="1000" min="1" step="50">
@@ -70,7 +75,8 @@
       <input type="range" id="maxlegs" min="2" max="8" step="1" value="5">
       <div class="hint">Longest accumulator the engine will build.</div>
     </div>
-  </section>
+    </section>
+  </details>
 
   <main>
     <div id="tab-bets"></div>

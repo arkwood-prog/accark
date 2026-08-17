@@ -77,10 +77,40 @@ header {
 .tab:hover { color: var(--text); }
 .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 
+/* ---------- collapsible panels ---------- */
+.panel {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  margin: 20px 0 12px;
+}
+.panel > summary {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  padding: 13px 16px; cursor: pointer; list-style: none;
+  border-radius: var(--radius);
+}
+.panel > summary::-webkit-details-marker { display: none; }
+.panel > summary:hover { background: var(--panel-2); }
+/* A caret drawn in CSS, so there is no icon font to load. */
+.panel > summary::before {
+  content: ''; flex: 0 0 auto; width: 6px; height: 6px; margin-right: 2px;
+  border-right: 2px solid var(--dim); border-bottom: 2px solid var(--dim);
+  transform: rotate(-45deg); transition: transform .15s;
+}
+.panel[open] > summary::before { transform: rotate(45deg); }
+.panel[open] > summary { border-bottom: 1px solid var(--line-soft); border-radius: var(--radius) var(--radius) 0 0; }
+.panel-title {
+  font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--text);
+}
+.panel-summary { font-family: var(--mono); font-size: 12px; color: var(--dim); margin-left: auto; }
+/* Slip cards sit flush inside a group rather than nesting a second border. */
+.panel.group > .slip { border-left: none; border-right: none; border-radius: 0; margin-bottom: 0; }
+.panel.group > .slip:last-child { border-bottom: none; }
+.panel.group > .section-note, .panel.group > .empty { margin: 14px 16px; }
+.panel.group > .empty { margin-bottom: 16px; }
+
 /* ---------- controls ---------- */
 .controls {
-  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 16px; margin: 20px 0 24px;
+  padding: 16px;
   display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px;
 }
 .control label {

@@ -49,6 +49,14 @@ function syncLabels() {
   $('weight-v').textContent = pct(Number($('weight').value), 0);
   $('halflife-v').textContent = `${$('halflife').value}d`;
   $('maxlegs-v').textContent = $('maxlegs').value;
+  // The settings panel is collapsed by default, so its header has to say what
+  // is inside it — otherwise you cannot tell what the card was priced with.
+  $('controls-summary').textContent = [
+    money(Number($('bankroll').value)),
+    `Kelly ${Number($('kelly').value).toFixed(2)}`,
+    `edge ${pct(Number($('minedge').value), 1)}`,
+    `model ${pct(Number($('weight').value), 0)}`,
+  ].join(' · ');
 }
 
 /* ------------------------------------------------------------------ render */
@@ -113,12 +121,40 @@ function slipCard(slip, index) {
   </article>`;
 }
 
-function section(title, note, slips, emptyText) {
+/* Open/closed state for the collapsible panels, remembered across reloads so a
+   slider nudge (which re-renders everything) does not re-collapse the card you
+   were reading. */
+const OPEN_KEY = 'bettingedge.open';
+let openPanels = {};
+try { openPanels = JSON.parse(localStorage.getItem(OPEN_KEY) || '{}') || {}; } catch { openPanels = {}; }
+
+function isOpen(key, fallback) {
+  return Object.prototype.hasOwnProperty.call(openPanels, key) ? !!openPanels[key] : fallback;
+}
+
+function setOpen(key, value) {
+  openPanels[key] = value;
+  try { localStorage.setItem(OPEN_KEY, JSON.stringify(openPanels)); } catch { /* private mode */ }
+}
+
+/** A collapsible group of slips. `key` persists its state, `openByDefault`
+    decides the first visit — singles matter most, so only they start open. */
+function section(key, title, note, slips, emptyText, openByDefault) {
   const body = slips.length
     ? slips.map(slipCard).join('')
     : `<div class="empty">${esc(emptyText)}</div>`;
-  return `<h2 class="section">${esc(title)}</h2>
-    <p class="section-note">${esc(note)}</p>${body}`;
+  const staked = slips.reduce((sum, s) => sum + (s.stake || 0), 0);
+  const count = slips.length
+    ? `${slips.length} bet${slips.length === 1 ? '' : 's'} · ${money(staked)} staked`
+    : 'none qualified';
+  return `<details class="panel group" data-key="${esc(key)}"${
+    isOpen(key, openByDefault) ? ' open' : ''}>
+      <summary>
+        <span class="panel-title">${esc(title)}</span>
+        <span class="panel-summary">${esc(count)}</span>
+      </summary>
+      <p class="section-note">${esc(note)}</p>${body}
+    </details>`;
 }
 
 function renderBets() {
@@ -135,15 +171,38 @@ function renderBets() {
     { k: 'Model blend', v: pct(s.config.market.model_weight, 0), s: 'weight on model vs market' },
   ]);
 
+  // Split by leg count rather than shipping one "multis" heap, so a card with
+  // 30 bets in it can be read a category at a time.
+  const legs = (slip) => (slip.legs || []).length;
+  const doubles = s.multis.filter((m) => legs(m) === 2);
+  const trebles = s.multis.filter((m) => legs(m) === 3);
+  const accas = s.multis.filter((m) => legs(m) >= 4);
+
+  const multiNote = 'Legs from different matches, combined by multiplication. Ranked by '
+    + 'expected log growth rather than raw expected value, so a combination that actually '
+    + 'lands is preferred to a lottery ticket with the same headline EV.';
+  const emptyMulti = 'None cleared the threshold. Every leg has to be strongly positive '
+    + 'because the bookmaker\'s margin compounds with each one — an empty list here is the '
+    + 'normal, correct answer.';
+
   el.innerHTML = head
-    + section('Singles', 'One selection, one match. This is where a real edge is most likely to survive contact with reality — the bookmaker\'s margin is charged once.',
-      s.singles, 'No single cleared the edge threshold. Lower "Min edge", or accept that this card has no value in it.')
-    + section('Doubles, trebles and accumulators',
-      'Legs from different matches, combined by multiplication. Ranked by expected log growth rather than raw expected value, so a combination that actually lands is preferred to a lottery ticket with the same headline EV.',
-      s.multis, 'No multi cleared the threshold. Multis need every leg to be strongly positive because the margin compounds — an empty list here is the normal, correct answer.')
-    + section('Same-game combinations',
-      'Two legs from one match, priced from the joint score distribution rather than multiplied, because they are correlated. Only worth taking at a book that prices same-game multis by multiplying the legs.',
-      s.same_game, 'No same-game combination showed enough correlation edge.');
+    + section('singles', 'Singles',
+      'One selection, one match. This is where a real edge is most likely to survive contact '
+      + 'with reality — the bookmaker\'s margin is charged once.',
+      s.singles,
+      'No single cleared the edge threshold. Lower "Min edge", or accept that this card has '
+      + 'no value in it.', true)
+    + section('doubles', 'Doubles', multiNote, doubles, emptyMulti, false)
+    + section('trebles', 'Trebles', multiNote, trebles, emptyMulti, false)
+    + section('accas', 'Accumulators',
+      `Four legs or more. ${multiNote} Raise "Max acca legs" to let the engine build longer `
+      + 'ones — though the margin compounds every time you do.',
+      accas, emptyMulti, false)
+    + section('samegame', 'Same-game combinations',
+      'Two legs from one match, priced from the joint score distribution rather than '
+      + 'multiplied, because they are correlated. Only worth taking at a book that prices '
+      + 'same-game multis by multiplying the legs.',
+      s.same_game, 'No same-game combination showed enough correlation edge.', false);
 }
 
 function probBar(probs) {
@@ -428,6 +487,13 @@ document.addEventListener('click', (event) => {
   if (head) head.parentElement.classList.toggle('open');
 });
 
+/* `toggle` does not bubble, so it is captured rather than delegated. */
+document.addEventListener('toggle', (event) => {
+  const panel = event.target;
+  if (panel.tagName === 'DETAILS' && panel.dataset.key) setOpen(panel.dataset.key, panel.open);
+  if (panel.id === 'controls') setOpen('controls', panel.open);
+}, true);
+
 document.querySelectorAll('.tab').forEach((tab) => {
   tab.onclick = () => {
     document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
@@ -524,6 +590,9 @@ async function loadLeagueOptions() {
 
 (async function init() {
   syncLabels();
+  // Collapsed on a first visit — six sliders is most of a phone screen — but
+  // reopened if that is how you left it.
+  $('controls').open = isOpen('controls', false);
   await loadLeagueOptions();
   try {
     const health = await (await fetch(`/api/health?${params()}`)).json();
