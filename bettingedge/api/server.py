@@ -7,6 +7,7 @@ whenever the tuning parameters change, which is fast enough to feel live.
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import threading
 import time
@@ -162,6 +163,21 @@ def qr_code(text: str) -> str | None:
 ACCESS_TOKEN_ENV = "BETTINGEDGE_TOKEN"
 _COOKIE = "bettingedge_token"
 
+# The web app manifest and its icons are fetched by the browser itself, not by
+# our page's JavaScript, and per spec a manifest request carries no credentials
+# unless the <link> opts in with crossorigin="use-credentials" — manifest-driven
+# icon fetches are inconsistent across browsers even then. Gating these behind
+# the token breaks "Add to Home Screen" (you get a generic bookmark showing a
+# page screenshot instead of the app icon) while protecting nothing at all:
+# they are a name and a logo, carrying no fixtures, prices or ratings.
+_PUBLIC_PATHS = frozenset({"/manifest.json", "/logo.svg"})
+_PUBLIC_ICON = re.compile(r"/icon-\d+\.png\Z")
+
+
+def _is_public_asset(path: str) -> bool:
+    """True for branding assets that must load before a token is presented."""
+    return path in _PUBLIC_PATHS or _PUBLIC_ICON.fullmatch(path) is not None
+
 
 def create_app(store: DataStore, token: str | None = None,
                extra_stores: dict[str, DataStore] | None = None) -> FastAPI:
@@ -190,6 +206,8 @@ def create_app(store: DataStore, token: str | None = None,
         # the first load: open https://host/?token=... once on the phone.
         @app.middleware("http")
         async def require_token(request: Request, call_next):
+            if _is_public_asset(request.url.path):
+                return await call_next(request)
             supplied = (request.query_params.get("token")
                         or request.cookies.get(_COOKIE)
                         or request.headers.get("x-bettingedge-token"))

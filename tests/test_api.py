@@ -1,6 +1,7 @@
 """HTTP API and CLI surface."""
 
 import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -210,6 +211,70 @@ def test_the_token_is_remembered_in_a_cookie(guarded):
     assert response.status_code == 200
     assert "bettingedge_token" in response.headers.get("set-cookie", "")
     assert "HttpOnly" in response.headers.get("set-cookie", "")
+
+
+def _cookieless_guarded_client():
+    """A token-protected client with an empty cookie jar.
+
+    The module-scoped `guarded` fixture cannot be reused here: the cookie test
+    above leaves a valid token in its jar, so every later request would be
+    authorised and these assertions would pass for the wrong reason.
+    """
+    matches, fixtures = synthetic.generate(seasons=2, seed=12)
+    store = DataStore(league="SYN", matches=matches, fixtures=fixtures,
+                      source="synthetic", loaded_at=date.today())
+    return TestClient(create_app(store, token="s3cret"))
+
+
+def test_the_manifest_and_icons_load_without_a_token():
+    """Add to Home Screen needs these before any cookie exists.
+
+    A browser fetches the manifest itself, with credentials omitted by default,
+    so gating it behind the token silently costs you the app icon — and it
+    protects nothing, since a name and a logo are not data.
+    """
+    client = _cookieless_guarded_client()
+    for path in ("/manifest.json", "/logo.svg", "/icon-192.png", "/icon-512.png"):
+        assert client.get(path).status_code == 200, path
+
+
+def test_the_manifest_still_declares_icons_that_are_actually_served():
+    """A manifest pointing at a 401 or a 404 installs a blank icon."""
+    client = _cookieless_guarded_client()
+    icons = client.get("/manifest.json").json()["icons"]
+    assert icons
+    for icon in icons:
+        assert client.get(icon["src"]).status_code == 200, icon["src"]
+
+
+def test_opening_the_manifest_up_did_not_open_up_the_data():
+    """The exemption must be branding-only — no data path may slip through."""
+    client = _cookieless_guarded_client()
+    for path in ("/", "/api/health", "/api/slate", "/api/ratings",
+                 "/api/backtest", "/api/leagues", "/app.js", "/styles.css"):
+        assert client.get(path).status_code == 401, path
+
+
+def test_public_asset_matching_is_not_a_loose_prefix():
+    """A near-miss path must not inherit the exemption."""
+    from bettingedge.api.server import _is_public_asset
+
+    assert _is_public_asset("/manifest.json")
+    assert _is_public_asset("/icon-192.png")
+    assert _is_public_asset("/icon-512.png")
+    assert not _is_public_asset("/manifest.json/../api/slate")
+    assert not _is_public_asset("/icon-192.png.map")
+    assert not _is_public_asset("/api/icon-192.png")
+    assert not _is_public_asset("/icon-abc.png")
+    assert not _is_public_asset("/")
+
+
+def test_the_page_asks_for_the_manifest_with_credentials():
+    """Without crossorigin=use-credentials the cookie is not sent at all."""
+    html = (Path(__file__).resolve().parent.parent
+            / "bettingedge" / "web" / "index.html").read_text(encoding="utf-8")
+    link = next(line for line in html.splitlines() if 'rel="manifest"' in line)
+    assert 'crossorigin="use-credentials"' in link
 
 
 # ------------------------------------------------------------ mobile assets
