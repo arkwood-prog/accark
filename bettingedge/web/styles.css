@@ -207,6 +207,13 @@ button.primary:disabled { opacity: .5; cursor: default; }
 .spark { width: 100%; height: 160px; }
 .hidden { display: none; }
 
+/* Inline text button — for toggles that belong in a sentence. */
+button.linky {
+  appearance: none; background: none; border: none; padding: 0;
+  color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline;
+}
+button.linky:hover { color: #46e0b5; }
+
 /* ---------- phones ---------- */
 @media (max-width: 640px) {
   .wrap { padding: 0 12px 60px; }

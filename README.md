@@ -520,6 +520,28 @@ bet), **Model & ratings** (team strength table, fitted parameters),
 **Method**. Bankroll, Kelly fraction, minimum edge, model weight, form half-life
 and maximum acca legs are all live controls — moving them refits and reprices.
 
+### Why the ratings table is the size it is
+
+The table shows the division as it currently stands — 20 teams for the Premier
+League, 24 for the Championship — but the model behind it is fitted on more
+clubs than that. A 900-day window covers about two and a half seasons, and
+promotion and relegation churn roughly six clubs a year, so a Championship fit
+rates 32 teams and a Premier League fit 25.
+
+Those extra clubs belong in the fit. To rate Leeds you need Leeds' results, and
+a good share of their opponents have since moved divisions; dropping them would
+discard real matches and bias everyone who played them. So they inform the
+ratings without cluttering the table — `Show all N rated teams` reveals them,
+tagged `not in division`.
+
+Which teams count as current is derived from results, not a hardcoded list: the
+newest season is used once it has a roster worth trusting (80% of a full one),
+and until then the last complete season stands in. That matters in August, when
+a division that has not kicked off yet would otherwise show no teams and one
+that has played a single Friday game would show two. When the new season's
+results land, the table switches over on its own and picks up promoted clubs
+with no edit from you.
+
 ---
 
 ## CLI reference

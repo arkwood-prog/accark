@@ -10,6 +10,7 @@ from bettingedge.api.server import DataStore, create_app
 from bettingedge.cli import build_parser, main
 from bettingedge.config import Config
 from bettingedge.data import synthetic
+from bettingedge.data.schema import Match
 from datetime import date
 
 
@@ -750,3 +751,69 @@ def test_run_server_single_league_still_works(monkeypatch):
     server_module.run_server(league="E0", refresh_minutes=0)
     assert list(server_module.STORES) == ["E0"]
     assert server_module.STORE.league == "E0"
+
+
+# ------------------------------------------- current division in the ratings
+def test_ratings_tag_which_teams_are_in_the_division_now():
+    """A 24-team league fitted over 6 seasons rates ~32 clubs; the table shows 24."""
+    from datetime import date as _date, timedelta
+
+    def season(start_year, teams):
+        out, kickoff = [], _date(start_year, 8, 10)
+        for r in range(4):
+            for i, home in enumerate(teams):
+                away = teams[(i + 1 + r) % len(teams)]
+                if home != away:
+                    out.append(Match(date=kickoff, league="E1", home=home, away=away,
+                                     home_goals=(i + r) % 3, away_goals=r % 2))
+                    kickoff += timedelta(days=2)
+        return out
+
+    old = [f"Old{i}" for i in range(12)]
+    now = [f"Now{i}" for i in range(12)]
+    matches = season(2024, old) + season(2025, now)
+    store = DataStore(league="E1", matches=matches, fixtures=[],
+                      source="test", loaded_at=date.today())
+    payload = TestClient(create_app(store)).get("/api/ratings").json()
+
+    assert payload["current_season"] == "2025-26"
+    assert payload["n_current_teams"] == len(now)
+    assert len(payload["teams"]) > payload["n_current_teams"], "fit should span both seasons"
+    current = {e["team"] for e in payload["teams"] if e["current"]}
+    assert current == set(now)
+    assert all(e["current"] is False for e in payload["teams"] if e["team"] in set(old))
+
+
+def test_every_rated_team_is_tagged_one_way_or_the_other():
+    """A missing flag would silently hide a team from the table."""
+    matches, fixtures = synthetic.generate(seasons=3, seed=7)
+    store = DataStore(league="SYN", matches=matches, fixtures=fixtures,
+                      source="synthetic", loaded_at=date.today())
+    payload = TestClient(create_app(store)).get("/api/ratings").json()
+    assert payload["teams"]
+    assert all(isinstance(e.get("current"), bool) for e in payload["teams"])
+
+
+def test_the_slate_model_carries_the_same_tags_as_the_ratings_endpoint():
+    """The dashboard table reads the slate payload, so the two must agree."""
+    matches, fixtures = synthetic.generate(seasons=3, seed=8)
+    store = DataStore(league="SYN", matches=matches, fixtures=fixtures,
+                      source="synthetic", loaded_at=date.today())
+    client = TestClient(create_app(store))
+    slate = client.get("/api/slate").json()["model"]
+    ratings = client.get("/api/ratings").json()
+    assert slate["n_current_teams"] == ratings["n_current_teams"]
+    assert slate["current_season"] == ratings["current_season"]
+    assert ({e["team"] for e in slate["teams"] if e["current"]}
+            == {e["team"] for e in ratings["teams"] if e["current"]})
+
+
+def test_tagging_never_drops_a_team_from_the_fit():
+    """Display filtering must not change what the model was fitted on."""
+    matches, fixtures = synthetic.generate(seasons=3, seed=9)
+    store = DataStore(league="SYN", matches=matches, fixtures=fixtures,
+                      source="synthetic", loaded_at=date.today())
+    payload = TestClient(create_app(store)).get("/api/ratings").json()
+    fitted = {t for m in matches for t in (m.home, m.away)}
+    assert {e["team"] for e in payload["teams"]} == fitted
+    assert payload["n_matches"] == len(matches)

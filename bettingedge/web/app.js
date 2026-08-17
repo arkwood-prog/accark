@@ -25,7 +25,8 @@ function md(text) {
     .join('');
 }
 
-const state = { slate: null, health: null, backtest: null, tab: 'bets', league: null };
+const state = { slate: null, health: null, backtest: null, tab: 'bets', league: null,
+                allTeams: false };
 
 /* ------------------------------------------------------------------ params */
 function params() {
@@ -234,7 +235,12 @@ function renderModel() {
   const el = $('tab-model');
   if (!s) { el.innerHTML = '<div class="loading">Loading…</div>'; return; }
   const m = s.model;
-  const max = Math.max(...m.teams.map((t) => Math.abs(t.net)), 0.1);
+  // The fit spans several seasons, so it rates clubs since promoted or
+  // relegated — 32 for a 24-team Championship. Show the division as it stands
+  // unless asked otherwise; the extra rows still inform every rating shown.
+  const departed = m.teams.filter((t) => t.current === false).length;
+  const shown = state.allTeams ? m.teams : m.teams.filter((t) => t.current !== false);
+  const max = Math.max(...shown.map((t) => Math.abs(t.net)), 0.1);
 
   el.innerHTML = tiles([
     { k: 'Matches fitted', v: m.n_matches, s: `effective sample ${m.effective_sample}` },
@@ -249,13 +255,22 @@ function renderModel() {
        <p class="section-note">Attack and defence in log-goals relative to an average team in
          this league; higher is better for both. A team on +0.30 attack scores about 35% more
          than average against the same opponent.</p>
+       ${departed ? `<p class="section-note">Showing the
+         ${m.n_current_teams} team${m.n_current_teams === 1 ? '' : 's'} in the division
+         ${m.current_season ? `for ${esc(m.current_season)}` : 'now'}. The model is fitted over
+         several seasons, so it also rates ${departed} club${departed === 1 ? '' : 's'} since
+         promoted or relegated — their results still shape the ratings below.
+         <button class="linky" id="toggle-teams">${state.allTeams
+           ? 'Show current division only' : `Show all ${m.teams.length} rated teams`}</button></p>`
+         : ''}
        <div class="table-wrap"><table>
          <thead><tr><th>#</th><th>Team</th><th class="num">Attack</th><th class="num">Defence</th>
            <th class="num">Net</th><th class="num">Played</th><th style="width:180px">Strength</th></tr></thead>
-         <tbody>${m.teams.map((t, i) => `
+         <tbody>${shown.map((t, i) => `
            <tr>
              <td>${i + 1}</td>
-             <td class="name">${esc(t.team)}</td>
+             <td class="name">${esc(t.team)}${t.current === false
+               ? ' <span class="badge">not in division</span>' : ''}</td>
              <td class="num ${cls(t.attack)}">${t.attack >= 0 ? '+' : ''}${t.attack.toFixed(3)}</td>
              <td class="num ${cls(t.defence)}">${t.defence >= 0 ? '+' : ''}${t.defence.toFixed(3)}</td>
              <td class="num ${cls(t.net)}">${t.net >= 0 ? '+' : ''}${t.net.toFixed(3)}</td>
@@ -263,6 +278,9 @@ function renderModel() {
              <td><div class="pbar"><i class="${t.net >= 0 ? 'home' : 'away'}"
                style="width:${(Math.abs(t.net) / max) * 100}%"></i></div></td>
            </tr>`).join('')}</tbody></table></div>`;
+
+  const toggle = $('toggle-teams');
+  if (toggle) toggle.onclick = () => { state.allTeams = !state.allTeams; renderModel(); };
 }
 
 function sparkline(curve) {

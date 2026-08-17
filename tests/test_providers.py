@@ -18,10 +18,12 @@ from bettingedge.data.providers.apifootball import APIFootball
 from bettingedge.data.providers.theoddsapi import TheOddsAPI
 from bettingedge.data.teams import (
     TeamResolver,
+    current_squad,
     parse_alias_arguments,
     reconcile_fixtures,
+    season_of,
 )
-from bettingedge.data.schema import Fixture
+from bettingedge.data.schema import Fixture, Match
 from bettingedge.pipeline import Engine
 
 E0_TEAMS = ["Arsenal", "Aston Villa", "Bournemouth", "Brighton", "Chelsea", "Everton",
@@ -534,3 +536,84 @@ def test_capture_summary_explains_an_empty_result():
     from bettingedge.data.providers import describe_capture
 
     assert "No fixtures parsed" in describe_capture([])
+
+
+# ------------------------------------------------- current division roster
+def _season_matches(start_year, teams, rounds=2, league="E1"):
+    """A round-robin over `teams`, dated inside the start_year/+1 season."""
+    from datetime import date as _date, timedelta
+
+    played = []
+    kickoff = _date(start_year, 8, 10)
+    for r in range(rounds):
+        for i, home in enumerate(teams):
+            away = teams[(i + 1 + r) % len(teams)]
+            if home == away:
+                continue
+            played.append(Match(date=kickoff, league=league, home=home, away=away,
+                                home_goals=1, away_goals=0))
+            kickoff += timedelta(days=3)
+    return played
+
+
+def test_current_squad_picks_the_latest_complete_season():
+    old = [f"Old{i}" for i in range(24)]
+    new = [f"New{i}" for i in range(24)]
+    matches = _season_matches(2024, old) + _season_matches(2025, new)
+    squad, season = current_squad(matches)
+    assert squad == set(new)
+    assert season == 2025
+
+
+def test_a_season_that_has_not_kicked_off_falls_back_to_the_last_one():
+    """Mid-August: the new season exists in the calendar but not in results."""
+    last = [f"T{i}" for i in range(24)]
+    squad, season = current_squad(_season_matches(2025, last))
+    assert squad == set(last)
+    assert season == 2025
+
+
+def test_one_opening_night_game_does_not_become_the_whole_division():
+    """Two teams having played is not a roster — keep last season's until a round lands."""
+    from datetime import date as _date
+
+    last = [f"T{i}" for i in range(24)]
+    matches = _season_matches(2025, last) + [
+        Match(date=_date(2026, 8, 14), league="E1", home="Promoted A",
+              away="Promoted B", home_goals=2, away_goals=1)]
+    squad, season = current_squad(matches)
+    assert season == 2025
+    assert "Promoted A" not in squad
+    assert squad == set(last)
+
+
+def test_a_full_opening_round_switches_over_and_picks_up_promoted_clubs():
+    """Once the new season has a real roster it wins, without editing any list."""
+    from datetime import date as _date, timedelta
+
+    last = [f"T{i}" for i in range(24)]
+    incoming = [f"T{i}" for i in range(21)] + ["Promoted A", "Promoted B", "Promoted C"]
+    opener, kickoff = [], _date(2026, 8, 14)
+    for i in range(0, len(incoming), 2):
+        opener.append(Match(date=kickoff, league="E1", home=incoming[i],
+                            away=incoming[i + 1], home_goals=1, away_goals=1))
+        kickoff += timedelta(days=1)
+    squad, season = current_squad(_season_matches(2025, last) + opener)
+    assert season == 2026
+    assert squad == set(incoming)
+    assert "Promoted A" in squad
+    assert "T23" not in squad          # relegated, no longer in the division
+
+
+def test_season_boundary_is_july_not_january():
+    from datetime import date as _date
+
+    assert season_of(_date(2026, 5, 24)) == 2025      # end of 2025-26
+    assert season_of(_date(2026, 6, 30)) == 2025      # summer gap
+    assert season_of(_date(2026, 7, 1)) == 2026       # new season begins
+    assert season_of(_date(2026, 8, 15)) == 2026
+    assert season_of(_date(2027, 1, 2)) == 2026       # January is mid-season
+
+
+def test_current_squad_on_no_matches_reports_nothing_rather_than_guessing():
+    assert current_squad([]) == (set(), None)

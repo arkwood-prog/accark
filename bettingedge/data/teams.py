@@ -240,6 +240,49 @@ def parse_alias_arguments(values: Iterable[str] | None) -> dict[str, str]:
     return aliases
 
 
+def season_of(match_date) -> int:
+    """The season a date belongs to, named by the year it started in.
+
+    European seasons straddle the new year, so July is the boundary: 2026-05-24
+    belongs to the 2025-26 season, 2026-08-15 to 2026-27.
+    """
+    return match_date.year - (1 if match_date.month < 7 else 0)
+
+
+def current_squad(matches: Sequence, completeness: float = 0.8) -> tuple[set[str], int | None]:
+    """Which teams are in the division now, and the season that says so.
+
+    A model fitted over several seasons knows far more clubs than the division
+    holds — 900 days of Championship football involves 32 teams, not 24, because
+    promotion and relegation churn about six a year. Those extra clubs belong in
+    the *fit* (dropping them would discard real matches and bias everyone who
+    played them) but not in a table headed with the league's name.
+
+    The newest season is skipped until it has a roster worth trusting, which
+    matters in August: a division whose opening weekend has not been played yet
+    has no teams at all, and one that has played a single Friday-night game has
+    two. Requiring ``completeness`` of the largest roster seen means the table
+    falls back to last season until a full round lands, then switches over on
+    its own — picking up promoted clubs without anyone editing a list.
+
+    Returns an empty set when there is nothing to go on, so callers can fall
+    back to showing everything rather than showing nothing.
+    """
+    if not matches:
+        return set(), None
+
+    squads: dict[int, set[str]] = {}
+    for match in matches:
+        squads.setdefault(season_of(match.date), set()).update((match.home, match.away))
+
+    benchmark = max(len(squad) for squad in squads.values())
+    threshold = benchmark * completeness
+    for season in sorted(squads, reverse=True):
+        if len(squads[season]) >= threshold:
+            return squads[season], season
+    return set(), None
+
+
 # --------------------------------------------------------------------------
 # Curated aliases. Canonical spelling is football-data.co.uk's, because that
 # is what the model is normally fitted on.

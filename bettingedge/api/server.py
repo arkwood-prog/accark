@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from ..backtest.engine import run_backtest
 from ..config import Config
 from ..data import synthetic
+from ..data.teams import current_squad
 from ..data.footballdata import (
     DEFAULT_PRICE_MODE,
     LEAGUES,
@@ -179,6 +180,31 @@ def _is_public_asset(path: str) -> bool:
     return path in _PUBLIC_PATHS or _PUBLIC_ICON.fullmatch(path) is not None
 
 
+def _tag_current_squad(model_payload: dict, matches: list[Match]) -> dict:
+    """Mark which rated teams are in the division now.
+
+    The fit spans several seasons on purpose, so it rates every club that passed
+    through — 32 for a 24-team Championship. Narrowing the fit to fix that would
+    throw away real matches; tagging the rows instead lets the table show the
+    league as it stands while the model keeps all its evidence.
+
+    Applied to both /api/slate and /api/ratings, since the dashboard's ratings
+    table is fed by the slate payload and the two must not disagree.
+    """
+    teams = model_payload.get("teams")
+    if not teams:
+        return model_payload
+    squad, season = current_squad(matches)
+    for entry in teams:
+        # No usable roster (synthetic data, a single part-season) means every
+        # team is shown rather than none.
+        entry["current"] = entry["team"] in squad if squad else True
+    model_payload["current_season"] = (f"{season}-{str(season + 1)[2:]}"
+                                       if season is not None else None)
+    model_payload["n_current_teams"] = sum(1 for e in teams if e["current"])
+    return model_payload
+
+
 def create_app(store: DataStore, token: str | None = None,
                extra_stores: dict[str, DataStore] | None = None) -> FastAPI:
     """Build the app around a primary store, optionally with more leagues loaded.
@@ -287,6 +313,8 @@ def create_app(store: DataStore, token: str | None = None,
                                     max_legs, min_leg_edge)
         built = Engine(config).build_slate(s.matches, s.fixtures)
         payload = built.to_dict(include_contexts=previews)
+        if isinstance(payload.get("model"), dict):
+            _tag_current_squad(payload["model"], s.matches)
         payload["source"] = s.source
         payload["league"] = s.league
         payload["league_name"] = LEAGUES.get(s.league, s.league)
@@ -302,7 +330,7 @@ def create_app(store: DataStore, token: str | None = None,
         s = resolve(league)
         config = Config.from_dict({"model": {"half_life_days": half_life}})
         model = Engine(config).fit(s.matches)
-        return model.to_dict()
+        return _tag_current_squad(model.to_dict(), s.matches)
 
     @app.get("/api/backtest")
     def backtest(
