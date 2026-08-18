@@ -520,6 +520,31 @@ bet), **Model & ratings** (team strength table, fitted parameters),
 **Method**. Bankroll, Kelly fraction, minimum edge, model weight, form half-life
 and maximum acca legs are all live controls — moving them refits and reprices.
 
+### Best bets
+
+The top panel on **Recommendations** is a shortlist across *every* loaded
+league — the reason to load seven is to pick from all of them, so this one
+ignores the league dropdown. A window selector picks the horizon (3, 7, 14 days
+or everything loaded), and only fixtures kicking off inside it are considered.
+A multi qualifies only if *every* leg lands in the window, not just the first.
+
+Two deliberate choices:
+
+- **Ranked by expected log growth, not raw edge.** The biggest edge on a card is
+  usually the bet the model is most wrong about — a longshot whose price it
+  happens to disagree with hardest, which is exactly where model error is
+  largest. Log growth is what fractional Kelly is trying to maximise, so it
+  prefers a bet that will actually compound a bankroll.
+- **Singles only by default.** Ranking every slip type together puts same-game
+  doubles at the top of every shortlist, because they are priced off the joint
+  distribution and disagree with the book most — while being the least
+  actionable, worth taking only where a book multiplies the legs. A list headed
+  "best bets" should be bets you can place, so `?include=all` is opt-in.
+
+`GET /api/best?days=7&limit=5` serves it, with the same bankroll/Kelly/edge
+parameters as the rest of the dashboard, so the shortlist always reflects the
+settings the card was priced with.
+
 ### Why the ratings table is the size it is
 
 The table shows the division as it currently stands — 20 teams for the Premier

@@ -12,7 +12,7 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -325,10 +325,22 @@ def create_app(store: DataStore, token: str | None = None,
                        "empty between seasons — restart with --synthetic for a demo, or "
                        "supply your own fixtures CSV.",
             )
+        return JSONResponse(build_slate_for(s, bankroll, kelly, min_edge, model_weight,
+                                            half_life, max_legs, min_leg_edge, previews))
+
+    def build_slate_for(s: DataStore, bankroll: float, kelly: float, min_edge: float,
+                        model_weight: float, half_life: float, max_legs: int,
+                        min_leg_edge: float, previews: bool) -> dict:
+        """Build (or reuse) one league's priced card.
+
+        Shared with /api/best, which needs every league's card at once — going
+        through the same per-store cache means a cross-league shortlist costs
+        nothing extra once the tabs have been looked at.
+        """
         key = f"{bankroll}|{kelly}|{min_edge}|{model_weight}|{half_life}|{max_legs}|{min_leg_edge}|{previews}"
         with s.lock:
             if key in s._slate_cache:
-                return JSONResponse(s._slate_cache[key])
+                return s._slate_cache[key]
         config = _config_from_query(bankroll, kelly, min_edge, model_weight, half_life,
                                     max_legs, min_leg_edge)
         built = Engine(config).build_slate(s.matches, s.fixtures)
@@ -342,7 +354,86 @@ def create_app(store: DataStore, token: str | None = None,
         payload["markdown"] = render_markdown(built)
         with s.lock:
             s._slate_cache[key] = payload
-        return JSONResponse(payload)
+        return payload
+
+    @app.get("/api/best")
+    def best(
+        days: int = Query(7, ge=1, le=60),
+        limit: int = Query(5, ge=1, le=25),
+        scope: str = Query("all"),
+        include: str = Query("singles"),
+        league: str | None = Query(None),
+        bankroll: float = Query(1000.0, gt=0),
+        kelly: float = Query(0.25, gt=0, le=1.0),
+        min_edge: float = Query(0.03, ge=0.0, le=0.5),
+        model_weight: float = Query(0.35, ge=0.0, le=1.0),
+        half_life: float = Query(180.0, gt=1.0),
+        max_legs: int = Query(5, ge=2, le=8),
+        min_leg_edge: float = Query(0.03, ge=0.0, le=0.5),
+    ) -> JSONResponse:
+        """The strongest bets kicking off within the next `days`.
+
+        Ranked by expected log growth rather than raw edge. Edge alone rewards
+        a longshot whose price the model happens to disagree with most, which
+        is exactly where model error is largest; log growth is what fractional
+        Kelly is trying to maximise, so it prefers a bet that will actually
+        compound a bankroll over one with a fat headline number.
+
+        Spans every loaded league by default — the reason to load seven is to
+        pick from all of them, and a shortlist confined to whichever league the
+        dropdown happens to be showing would defeat that.
+
+        Singles only unless ``include=all``. Ranking every slip type together
+        puts same-game doubles at the top of every shortlist, because those are
+        priced off the joint distribution and disagree with the book most; they
+        are also the least actionable, being worth taking only where a book
+        multiplies the legs. A list headed "best bets" should be bets you can
+        place, so multis are opt-in.
+        """
+        groups = (("singles", "multis", "same_game") if include == "all" else ("singles",))
+        stores = ([resolve(league)] if scope == "league"
+                  else [all_stores[code] for code in sorted(all_stores)])
+        horizon = date.today() + timedelta(days=days)
+
+        picks, leagues_seen, errors = [], [], []
+        for s in stores:
+            if not s.fixtures:
+                continue
+            leagues_seen.append(s.league)
+            try:
+                card = build_slate_for(s, bankroll, kelly, min_edge, model_weight,
+                                       half_life, max_legs, min_leg_edge, False)
+            except Exception as exc:                       # one bad league must not
+                errors.append(f"{s.league}: {exc}")        # sink the whole shortlist
+                continue
+            for group in groups:
+                for slip in card.get(group, []):
+                    legs = slip.get("legs") or []
+                    dates = [leg.get("date") for leg in legs if leg.get("date")]
+                    if len(dates) != len(legs) or not dates:
+                        continue
+                    # Every leg must land inside the window: a multi that runs
+                    # past it is not a bet for this week.
+                    if max(dates) > horizon.isoformat():
+                        continue
+                    picks.append({**slip, "league": card["league"],
+                                  "league_name": card["league_name"],
+                                  "group": group, "kicks_off": min(dates)})
+
+        picks.sort(key=lambda p: (p.get("log_growth") or 0.0, p.get("edge") or 0.0),
+                   reverse=True)
+        return JSONResponse({
+            "days": days,
+            "limit": limit,
+            "scope": scope,
+            "include": include,
+            "through": horizon.isoformat(),
+            "leagues_considered": leagues_seen,
+            "n_candidates": len(picks),
+            "bets": picks[:limit],
+            "errors": errors,
+            "disclaimer": DISCLAIMER,
+        })
 
     @app.get("/api/ratings")
     def ratings(league: str | None = Query(None),

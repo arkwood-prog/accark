@@ -874,3 +874,105 @@ def test_dashboard_files_are_never_served_stale(client):
 
 def test_the_index_declares_a_html_content_type(client):
     assert client.get("/").headers["content-type"].startswith("text/html")
+
+
+# --------------------------------------------------------------- best bets
+def _best_client():
+    a_m, a_f = synthetic.generate(seasons=3, seed=4)
+    b_m, b_f = synthetic.generate(seasons=3, seed=9)
+    primary = DataStore(league="E0", matches=a_m, fixtures=a_f,
+                        source="synthetic", loaded_at=date.today())
+    other = DataStore(league="SP1", matches=b_m, fixtures=b_f,
+                      source="synthetic", loaded_at=date.today())
+    return TestClient(create_app(primary, extra_stores={"SP1": other})), primary, other
+
+
+def test_best_spans_every_loaded_league():
+    """A shortlist confined to one league defeats the point of loading seven."""
+    client, _, _ = _best_client()
+    body = client.get("/api/best", params={"days": 30, "min_edge": 0.005}).json()
+    assert body["leagues_considered"] == ["E0", "SP1"]
+    assert len(body["bets"]) == 5
+    assert {b["league"] for b in body["bets"]} <= {"E0", "SP1"}
+    # Every pick says which division it came from — team names alone do not.
+    assert all(b.get("league_name") for b in body["bets"])
+
+
+def test_best_is_ranked_by_log_growth_not_raw_edge():
+    client, _, _ = _best_client()
+    bets = client.get("/api/best", params={"days": 30, "limit": 10,
+                                           "min_edge": 0.005}).json()["bets"]
+    growth = [b["log_growth"] for b in bets]
+    assert growth == sorted(growth, reverse=True)
+
+
+def test_best_defaults_to_singles_only():
+    """Ranking all slip types together buries real singles under same-game doubles."""
+    client, _, _ = _best_client()
+    body = client.get("/api/best", params={"days": 30, "min_edge": 0.005}).json()
+    assert body["include"] == "singles"
+    assert all(len(b["legs"]) == 1 for b in body["bets"])
+    assert all(b["group"] == "singles" for b in body["bets"])
+
+
+def test_best_can_be_asked_for_every_slip_type():
+    client, _, _ = _best_client()
+    body = client.get("/api/best", params={"days": 30, "limit": 10, "min_edge": 0.005,
+                                           "include": "all"}).json()
+    assert any(len(b["legs"]) > 1 for b in body["bets"]), "multis should be admitted"
+
+
+def test_best_honours_the_time_window():
+    client, _, _ = _best_client()
+    wide = client.get("/api/best", params={"days": 60, "min_edge": 0.005}).json()
+    narrow = client.get("/api/best", params={"days": 1, "min_edge": 0.005}).json()
+    assert wide["n_candidates"] > narrow["n_candidates"]
+    for bet in wide["bets"]:
+        for leg in bet["legs"]:
+            assert leg["date"] <= wide["through"]
+
+
+def test_a_multi_running_past_the_window_is_excluded():
+    """Every leg must land inside it, not just the first."""
+    client, _, _ = _best_client()
+    body = client.get("/api/best", params={"days": 30, "limit": 25, "min_edge": 0.005,
+                                           "include": "all"}).json()
+    for bet in body["bets"]:
+        assert max(leg["date"] for leg in bet["legs"]) <= body["through"]
+
+
+def test_best_can_be_narrowed_to_one_league():
+    client, _, other = _best_client()
+    body = client.get("/api/best", params={"days": 30, "min_edge": 0.005,
+                                           "scope": "league", "league": "SP1"}).json()
+    assert body["leagues_considered"] == ["SP1"]
+    assert {b["league"] for b in body["bets"]} == {"SP1"}
+
+
+def test_best_rejects_nonsense_parameters():
+    client, _, _ = _best_client()
+    assert client.get("/api/best", params={"days": 0}).status_code == 422
+    assert client.get("/api/best", params={"limit": 0}).status_code == 422
+    assert client.get("/api/best", params={"days": 900}).status_code == 422
+
+
+def test_best_is_token_protected_like_every_other_data_endpoint():
+    # Not the module-scoped `guarded` fixture: the cookie test above leaves a
+    # valid token in its jar, so the 401 case would pass for the wrong reason.
+    client = _cookieless_guarded_client()
+    assert client.get("/api/best").status_code == 401
+    assert client.get("/api/best", params={"token": "s3cret"}).status_code == 200
+
+
+def test_best_survives_a_league_with_no_fixtures():
+    """An out-of-season division must not empty the whole shortlist."""
+    matches, fixtures = synthetic.generate(seasons=3, seed=4)
+    live = DataStore(league="E0", matches=matches, fixtures=fixtures,
+                     source="synthetic", loaded_at=date.today())
+    empty = DataStore(league="I1", matches=matches, fixtures=[],
+                      source="synthetic", loaded_at=date.today())
+    client = TestClient(create_app(live, extra_stores={"I1": empty}))
+    body = client.get("/api/best", params={"days": 30, "min_edge": 0.005}).json()
+    assert body["leagues_considered"] == ["E0"]
+    assert body["bets"]
+    assert not body["errors"]

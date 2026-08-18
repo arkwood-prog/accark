@@ -26,7 +26,11 @@ function md(text) {
 }
 
 const state = { slate: null, health: null, backtest: null, tab: 'bets', league: null,
-                allTeams: false };
+                allTeams: false, best: null, bestDays: 7 };
+try {
+  const saved = Number(localStorage.getItem('bettingedge.bestDays'));
+  if (saved > 0) state.bestDays = saved;
+} catch { /* private mode */ }
 
 /* ------------------------------------------------------------------ params */
 function params() {
@@ -93,9 +97,12 @@ function slipCard(slip, index) {
   const title = slip.size === 1
     ? `${esc(slip.legs[0].label)}`
     : `${esc(slip.kind)} — ${slip.legs.map((l) => esc(l.short_label)).join(' + ')}`;
+  // league_name is only set on cross-league picks (/api/best), where you cannot
+  // tell from the team names alone which division a bet came from.
+  const from = slip.league_name ? `${esc(slip.league_name)} · ` : '';
   const sub = slip.size === 1
-    ? `${esc(slip.legs[0].match)} · ${esc(slip.legs[0].date)}`
-    : `${slip.size} legs · ${slip.legs.map((l) => esc(l.match)).join(' | ')}`;
+    ? `${from}${esc(slip.legs[0].match)} · ${esc(slip.legs[0].date)}`
+    : `${from}${slip.size} legs · ${slip.legs.map((l) => esc(l.match)).join(' | ')}`;
 
   return `<article class="slip" data-index="${index}">
     <div class="slip-head">
@@ -162,6 +169,48 @@ function section(key, title, note, slips, emptyText, openByDefault) {
     </details>`;
 }
 
+const BEST_WINDOWS = [[3, 'Next 3 days'], [7, 'Next 7 days'], [14, 'Next 14 days'],
+                      [60, 'All upcoming']];
+
+/** Shortlist across every loaded league, kicking off inside the chosen window. */
+function bestSection() {
+  const b = state.best;
+  const options = BEST_WINDOWS.map(([d, label]) =>
+    `<option value="${d}"${d === state.bestDays ? ' selected' : ''}>${esc(label)}</option>`).join('');
+  const picker = `<div class="best-controls">
+      <label for="best-days">Window</label>
+      <select id="best-days" class="league-select">${options}</select>
+    </div>`;
+
+  let body;
+  let summary;
+  if (!b) {
+    body = '<div class="loading">Finding the strongest bets…</div>';
+    summary = 'loading…';
+  } else if (b.bets.length) {
+    const leagues = b.leagues_considered.length;
+    summary = `top ${b.bets.length} · ${b.days} days · ${leagues} league${leagues === 1 ? '' : 's'}`;
+    body = `<p class="section-note">The strongest singles kicking off before
+        ${esc(b.through)}, across every loaded league — ${b.n_candidates} qualified,
+        these are the top ${b.bets.length}. Ranked by expected log growth rather than
+        raw edge: the biggest edge is usually the bet the model is most wrong about,
+        while log growth is what your Kelly staking is actually trying to compound.</p>
+      ${b.bets.map(slipCard).join('')}`;
+  } else {
+    summary = `nothing in ${b.days} days`;
+    body = `<div class="empty">No single qualified before ${esc(b.through)}.
+      Widen the window, lower "Min edge" in Settings, or accept that this week's
+      card has no value in it.</div>`;
+  }
+  return `<details class="panel group" data-key="best"${isOpen('best', true) ? ' open' : ''}>
+      <summary>
+        <span class="panel-title">Best bets</span>
+        <span class="panel-summary">${esc(summary)}</span>
+      </summary>
+      ${picker}${body}
+    </details>`;
+}
+
 function renderBets() {
   const s = state.slate;
   const el = $('tab-bets');
@@ -191,6 +240,7 @@ function renderBets() {
     + 'normal, correct answer.';
 
   el.innerHTML = head
+    + bestSection()
     + section('singles', 'Singles',
       'One selection, one match. This is where a real edge is most likely to survive contact '
       + 'with reality — the bookmaker\'s margin is charged once.',
@@ -208,6 +258,15 @@ function renderBets() {
       + 'multiplied, because they are correlated. Only worth taking at a book that prices '
       + 'same-game multis by multiplying the legs.',
       s.same_game, 'No same-game combination showed enough correlation edge.', false);
+
+  const days = $('best-days');
+  if (days) days.onchange = () => {
+    state.bestDays = Number(days.value);
+    try { localStorage.setItem('bettingedge.bestDays', String(state.bestDays)); } catch { /* ignore */ }
+    state.best = null;
+    renderBets();
+    loadBest();
+  };
 }
 
 function probBar(probs) {
@@ -480,11 +539,24 @@ async function loadSlate() {
   }
 }
 
+/** Deliberately not scoped to the league dropdown — the shortlist spans every
+    loaded league, so switching leagues does not change it. */
+async function loadBest() {
+  try {
+    const response = await fetch(`/api/best?${params()}&days=${state.bestDays}&limit=5`);
+    if (!response.ok) { state.best = null; return; }
+    state.best = await response.json();
+  } catch (err) {
+    state.best = null;
+  }
+  if (state.tab === 'bets') renderBets();
+}
+
 let debounce;
 function onControlChange() {
   syncLabels();
   clearTimeout(debounce);
-  debounce = setTimeout(loadSlate, 320);
+  debounce = setTimeout(() => { loadSlate(); loadBest(); }, 320);
 }
 
 document.addEventListener('click', (event) => {
@@ -608,6 +680,7 @@ async function loadLeagueOptions() {
     $('status').textContent = 'backend unreachable';
   }
   loadSlate();
+  loadBest();
   // Cheap: one small JSON request a minute, and it keeps the age indicator
   // honest on a phone that has been sitting open.
   setInterval(pollHealth, 60000);

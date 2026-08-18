@@ -106,6 +106,13 @@ header {
 .panel.group > .slip { border-left: none; border-right: none; border-radius: 0; margin-bottom: 0; }
 .panel.group > .slip:last-child { border-bottom: none; }
 .panel.group > .section-note, .panel.group > .empty { margin: 14px 16px; }
+.best-controls {
+  display: flex; align-items: center; gap: 10px; padding: 12px 16px 0; flex-wrap: wrap;
+}
+.best-controls label {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
+}
+.best-controls .league-select { margin-left: 0; }
 .panel.group > .empty { margin-bottom: 16px; }
 
 /* ---------- controls ---------- */
