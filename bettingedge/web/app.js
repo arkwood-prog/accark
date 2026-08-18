@@ -190,17 +190,31 @@ function bestSection() {
   } else if (b.bets.length) {
     const leagues = b.leagues_considered.length;
     summary = `top ${b.bets.length} · ${b.days} days · ${leagues} league${leagues === 1 ? '' : 's'}`;
-    body = `<p class="section-note">The strongest singles kicking off before
-        ${esc(b.through)}, across every loaded league — ${b.n_candidates} qualified,
-        these are the top ${b.bets.length}. Ranked by expected log growth rather than
-        raw edge: the biggest edge is usually the bet the model is most wrong about,
-        while log growth is what your Kelly staking is actually trying to compound.</p>
+    body = `<p class="section-note">Bets that land at least
+        ${pct(b.min_probability, 0)} of the time <em>and</em> carry High confidence,
+        kicking off before ${esc(b.through)}, across every loaded league. Of
+        ${b.n_in_window} in the window, ${b.excluded_unlikely} were too unlikely and
+        ${b.excluded_low_confidence} were not High confidence, leaving
+        ${b.n_candidates} — these are the best ${b.bets.length}.</p>
+      <p class="section-note">Those two filters measure different things.
+        <em>Lands</em> is the chance the bet wins. <em>Conf</em> is how well the model
+        and market agree and how much data backs the price — a High-confidence bet can
+        still be a long shot, which is why both have to clear the bar. Ranked by
+        expected log growth, not raw edge: the biggest edge is usually the bet the
+        model is most wrong about.</p>
       ${b.bets.map(slipCard).join('')}`;
   } else {
     summary = `nothing in ${b.days} days`;
-    body = `<div class="empty">No single qualified before ${esc(b.through)}.
-      Widen the window, lower "Min edge" in Settings, or accept that this week's
-      card has no value in it.</div>`;
+    const why = b.n_in_window
+      ? `All ${b.n_in_window} bet${b.n_in_window === 1 ? '' : 's'} in the window were
+         filtered out — ${b.excluded_unlikely} too unlikely to land
+         (under ${pct(b.min_probability, 0)}) and ${b.excluded_low_confidence} below
+         High confidence. Widen the window, or lower "Min edge" in Settings to bring
+         more candidates in.`
+      : `No bet cleared the edge threshold before ${esc(b.through)}. Widen the window,
+         lower "Min edge" in Settings, or accept that this week's card has no value
+         in it.`;
+    body = `<div class="empty">${why}</div>`;
   }
   return `<details class="panel group" data-key="best"${isOpen('best', true) ? ' open' : ''}>
       <summary>

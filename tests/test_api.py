@@ -976,3 +976,51 @@ def test_best_survives_a_league_with_no_fixtures():
     assert body["leagues_considered"] == ["E0"]
     assert body["bets"]
     assert not body["errors"]
+
+
+def test_best_keeps_only_likely_and_high_confidence_bets():
+    """A shortlist you would actually place: probable AND well-priced.
+
+    The two are different measures — confidence scores model/market agreement
+    and data depth, so a High-confidence bet can still be a 25% shot.
+    """
+    from bettingedge.betting.value import tier_for
+
+    client, _, _ = _best_client()
+    body = client.get("/api/best", params={"days": 30, "limit": 25,
+                                           "min_edge": 0.005}).json()
+    assert body["bets"], "synthetic data should yield some qualifying bets"
+    for bet in body["bets"]:
+        assert bet["probability"] >= 0.5, bet["probability"]
+        assert tier_for(bet["confidence"]) == "High", bet["confidence"]
+
+
+def test_best_filters_are_reported_so_an_empty_list_explains_itself():
+    client, _, _ = _best_client()
+    body = client.get("/api/best", params={"days": 30, "min_edge": 0.005}).json()
+    assert body["min_probability"] == 0.5
+    assert body["high_only"] is True
+    assert body["n_in_window"] >= body["n_candidates"]
+    assert body["excluded_unlikely"] > 0, "synthetic cards carry plenty of long shots"
+
+
+def test_best_filters_can_both_be_turned_off():
+    client, _, _ = _best_client()
+    strict = client.get("/api/best", params={"days": 30, "min_edge": 0.005}).json()
+    loose = client.get("/api/best", params={"days": 30, "min_edge": 0.005,
+                                            "min_probability": 0,
+                                            "high_only": "false"}).json()
+    assert loose["n_candidates"] > strict["n_candidates"]
+    assert loose["excluded_unlikely"] == 0
+    assert loose["excluded_low_confidence"] == 0
+
+
+def test_a_stricter_probability_floor_shortens_the_list():
+    client, _, _ = _best_client()
+    at50 = client.get("/api/best", params={"days": 30, "min_edge": 0.005,
+                                           "min_probability": 0.5}).json()
+    at70 = client.get("/api/best", params={"days": 30, "min_edge": 0.005,
+                                           "min_probability": 0.7}).json()
+    assert at70["n_candidates"] <= at50["n_candidates"]
+    for bet in at70["bets"]:
+        assert bet["probability"] >= 0.7

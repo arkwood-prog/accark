@@ -535,6 +535,11 @@ Two deliberate choices:
   happens to disagree with hardest, which is exactly where model error is
   largest. Log growth is what fractional Kelly is trying to maximise, so it
   prefers a bet that will actually compound a bankroll.
+- **Likely *and* well-priced.** Two filters run before the ranking, and they
+  measure different things. *Lands* is the chance the bet wins; a pick must clear
+  50%. *Confidence* scores how well model and market agree and how much data backs
+  the price — a High-confidence bet can still be a 25% shot, which is why both have
+  to pass. Override with `?min_probability=0&high_only=false`.
 - **Singles only by default.** Ranking every slip type together puts same-game
   doubles at the top of every shortlist, because they are priced off the joint
   distribution and disagree with the book most — while being the least

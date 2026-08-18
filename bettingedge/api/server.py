@@ -20,6 +20,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
 from ..backtest.engine import run_backtest
+from ..betting.value import tier_for
 from ..config import Config
 from ..data import synthetic
 from ..data.teams import current_squad
@@ -362,6 +363,8 @@ def create_app(store: DataStore, token: str | None = None,
         limit: int = Query(5, ge=1, le=25),
         scope: str = Query("all"),
         include: str = Query("singles"),
+        min_probability: float = Query(0.5, ge=0.0, le=1.0),
+        high_only: bool = Query(True),
         league: str | None = Query(None),
         bankroll: float = Query(1000.0, gt=0),
         kelly: float = Query(0.25, gt=0, le=1.0),
@@ -389,6 +392,14 @@ def create_app(store: DataStore, token: str | None = None,
         are also the least actionable, being worth taking only where a book
         multiplies the legs. A list headed "best bets" should be bets you can
         place, so multis are opt-in.
+
+        Two filters run before the ranking, and they measure different things.
+        ``min_probability`` is the chance the bet actually lands. ``high_only``
+        keeps the "High" confidence tier, which is a different idea entirely:
+        confidence scores how well model and market agree and how much data
+        backs the price, so a High-confidence bet can still be a 25% shot. Both
+        apply by default, because a shortlist you would actually place wants
+        bets that are well-priced *and* probable.
         """
         groups = (("singles", "multis", "same_game") if include == "all" else ("singles",))
         stores = ([resolve(league)] if scope == "league"
@@ -420,6 +431,18 @@ def create_app(store: DataStore, token: str | None = None,
                                   "league_name": card["league_name"],
                                   "group": group, "kicks_off": min(dates)})
 
+        in_window = len(picks)
+        # Counted separately rather than as one combined reject, so an empty
+        # shortlist can say which filter emptied it — "nothing qualified" is
+        # not an answer you can act on.
+        cut_unlikely = sum(1 for p in picks if (p.get("probability") or 0.0) < min_probability)
+        cut_low_conf = sum(1 for p in picks
+                           if tier_for(p.get("confidence") or 0.0) != "High")
+        if min_probability > 0:
+            picks = [p for p in picks if (p.get("probability") or 0.0) >= min_probability]
+        if high_only:
+            picks = [p for p in picks if tier_for(p.get("confidence") or 0.0) == "High"]
+
         picks.sort(key=lambda p: (p.get("log_growth") or 0.0, p.get("edge") or 0.0),
                    reverse=True)
         return JSONResponse({
@@ -427,9 +450,14 @@ def create_app(store: DataStore, token: str | None = None,
             "limit": limit,
             "scope": scope,
             "include": include,
+            "min_probability": min_probability,
+            "high_only": high_only,
             "through": horizon.isoformat(),
             "leagues_considered": leagues_seen,
+            "n_in_window": in_window,
             "n_candidates": len(picks),
+            "excluded_unlikely": cut_unlikely if min_probability > 0 else 0,
+            "excluded_low_confidence": cut_low_conf if high_only else 0,
             "bets": picks[:limit],
             "errors": errors,
             "disclaimer": DISCLAIMER,
