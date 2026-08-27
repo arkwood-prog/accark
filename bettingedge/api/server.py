@@ -53,22 +53,37 @@ class DataStore:
     _backtest_cache: dict[str, Any] = field(default_factory=dict)
     refreshed_at: datetime = field(default_factory=datetime.now)
     last_refresh_error: str | None = None
+    # Why the fixture list is empty, when it is empty because the fetch failed
+    # rather than because there genuinely is no upcoming card. The two look
+    # identical from the outside and must not be treated the same.
+    fixtures_error: str | None = None
 
     def replace_data(self, matches: list[Match], fixtures: list[Fixture],
-                     source: str) -> None:
+                     source: str, fixtures_error: str | None = None) -> None:
         """Swap in newly fetched data and drop everything derived from the old.
 
         Holding the lock for the whole swap means a request in flight either
         sees entirely the old data or entirely the new — never a slate priced
         from fresh fixtures against a stale model.
+
+        When ``fixtures_error`` is set the incoming fixture list could not be
+        trusted, so the previous one is kept rather than blanked — see
+        ``start_refresh_loop``. Fixtures that have already kicked off are
+        dropped on the way through, so holding on to them can never resurrect a
+        card for matches that have been played.
         """
         with self.lock:
             self.matches = matches
-            self.fixtures = fixtures
+            if fixtures_error and not fixtures:
+                today = date.today()
+                self.fixtures = [f for f in self.fixtures if f.date >= today]
+            else:
+                self.fixtures = fixtures
             self.source = source
             self.loaded_at = date.today()
             self.refreshed_at = datetime.now()
             self.last_refresh_error = None
+            self.fixtures_error = fixtures_error
             self._slate_cache.clear()
             self._backtest_cache.clear()
 
@@ -302,6 +317,7 @@ def create_app(store: DataStore, token: str | None = None,
             "history_to": s.matches[-1].date.isoformat() if s.matches else None,
             "refreshed_at": s.refreshed_at.isoformat(timespec="seconds"),
             "refresh_error": s.last_refresh_error,
+            "fixtures_error": s.fixtures_error,
             "available_leagues": sorted(all_stores),
             "disclaimer": DISCLAIMER,
         }
@@ -320,12 +336,19 @@ def create_app(store: DataStore, token: str | None = None,
     ) -> JSONResponse:
         s = resolve(league)
         if not s.fixtures:
-            raise HTTPException(
-                status_code=404,
-                detail="No upcoming fixtures with prices are loaded. The free feed is "
-                       "empty between seasons — restart with --synthetic for a demo, or "
-                       "supply your own fixtures CSV.",
+            # Distinguish "the provider failed" from "there is no card": they
+            # look identical here and need completely different responses.
+            detail = (
+                f"Could not fetch fixtures from {s.source}: {s.fixtures_error}. "
+                "This is a provider problem, not an empty card — check the API key "
+                "and whether the monthly quota is spent (`bettingedge env`)."
+                if s.fixtures_error else
+                "No upcoming fixtures with prices are loaded. The feed is empty "
+                "between seasons and during international breaks — try another "
+                "league, restart with --synthetic for a demo, or supply your own "
+                "fixtures CSV."
             )
+            raise HTTPException(status_code=404, detail=detail)
         return JSONResponse(build_slate_for(s, bankroll, kelly, min_edge, model_weight,
                                             half_life, max_legs, min_leg_edge, previews))
 
@@ -548,13 +571,14 @@ def load_store(league: str = "E0", seasons: int = 4, offline: bool = False,
     matches = source.results(league, codes)
     print(f"  {len(matches)} matches")
 
+    fixtures_error: str | None = None
     if odds_provider == "footballdata":
         try:
             fixtures = source.fixtures([league])
             print(f"  {len(fixtures)} upcoming fixtures with prices")
         except Exception as exc:
             print(f"  ! could not load fixtures: {exc}")
-            fixtures = []
+            fixtures, fixtures_error = [], str(exc)
         source_label = f"football-data.co.uk ({price_mode} prices)"
     else:
         # Local import avoids a hard dependency on the providers package for
@@ -571,7 +595,7 @@ def load_store(league: str = "E0", seasons: int = 4, offline: bool = False,
             print(f"  {len(fixtures)} upcoming fixtures with prices")
         except Exception as exc:
             print(f"  ! could not load live fixtures: {exc}")
-            fixtures = []
+            fixtures, fixtures_error = [], str(exc)
 
         if fixtures:
             # A live provider spells teams differently than the results this
@@ -586,7 +610,8 @@ def load_store(league: str = "E0", seasons: int = 4, offline: bool = False,
         source_label = f"{info.title} (live)"
 
     return DataStore(league=league, matches=matches, fixtures=fixtures,
-                     source=source_label, loaded_at=date.today())
+                     source=source_label, loaded_at=date.today(),
+                     fixtures_error=fixtures_error)
 
 
 def start_refresh_loop(store: DataStore, minutes: int, **load_kwargs) -> threading.Thread | None:
@@ -600,6 +625,14 @@ def start_refresh_loop(store: DataStore, minutes: int, **load_kwargs) -> threadi
     served and the error is surfaced on /api/health. Odds going stale is a
     far better outcome than the dashboard going dark because a provider
     had a bad minute.
+
+    That guarantee used to have a hole. load_store catches a failed fixture
+    fetch and returns an empty list, so a provider outage or an exhausted quota
+    produced a perfectly successful-looking refresh carrying no fixtures, which
+    then overwrote a good card with nothing — and reported no error, because
+    nothing had raised. A dashboard reading "0 fixtures" with a clean bill of
+    health is the worst kind of wrong. The fixture list is now only replaced
+    when it was actually fetched.
     """
     if minutes <= 0:
         return None
@@ -609,12 +642,19 @@ def start_refresh_loop(store: DataStore, minutes: int, **load_kwargs) -> threadi
             time.sleep(minutes * 60)
             try:
                 fresh = load_store(**load_kwargs)
-                if fresh.matches:
-                    store.replace_data(fresh.matches, fresh.fixtures, fresh.source)
+                if not fresh.matches:
+                    raise RuntimeError("refresh returned no match history")
+                store.replace_data(fresh.matches, fresh.fixtures, fresh.source,
+                                   fixtures_error=fresh.fixtures_error)
+                if fresh.fixtures_error:
+                    store.last_refresh_error = (
+                        f"{datetime.now():%Y-%m-%d %H:%M} — fixtures not refreshed: "
+                        f"{fresh.fixtures_error}")
+                    print(f"[refresh] {datetime.now():%H:%M} — fixture fetch failed, kept "
+                          f"{len(store.fixtures)} previous fixture(s): {fresh.fixtures_error}")
+                else:
                     print(f"[refresh] {datetime.now():%H:%M} — {len(fresh.fixtures)} "
                           f"fixtures, {len(fresh.matches)} matches")
-                else:
-                    raise RuntimeError("refresh returned no match history")
             except Exception as exc:
                 store.last_refresh_error = f"{datetime.now():%Y-%m-%d %H:%M} — {exc}"
                 print(f"[refresh] failed, keeping previous data: {exc}")

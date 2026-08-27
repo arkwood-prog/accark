@@ -1024,3 +1024,66 @@ def test_a_stricter_probability_floor_shortens_the_list():
     assert at70["n_candidates"] <= at50["n_candidates"]
     for bet in at70["bets"]:
         assert bet["probability"] >= 0.7
+
+
+# ------------------------------------------------- fixtures lost on refresh
+def _live_store():
+    matches, fixtures = synthetic.generate(seasons=2, seed=31)
+    return DataStore(league="E0", matches=matches, fixtures=fixtures,
+                     source="The Odds API (live)", loaded_at=date.today()), matches, fixtures
+
+
+def test_a_failed_fixture_fetch_does_not_blank_a_good_card():
+    """load_store swallows provider errors and returns []; that must not wipe."""
+    store, matches, fixtures = _live_store()
+    store.replace_data(matches, [], "The Odds API (live)",
+                       fixtures_error="401 quota exceeded")
+    assert len(store.fixtures) == len(fixtures)
+    assert store.fixtures_error == "401 quota exceeded"
+
+
+def test_a_genuinely_empty_card_still_clears_the_fixtures():
+    """Between seasons there really is nothing on — stale fixtures would lie."""
+    store, matches, _ = _live_store()
+    store.replace_data(matches, [], "The Odds API (live)", fixtures_error=None)
+    assert store.fixtures == []
+    assert store.fixtures_error is None
+
+
+def test_kept_fixtures_never_include_matches_already_played():
+    """Holding on through an outage must not resurrect a finished card."""
+    import dataclasses
+    from datetime import timedelta
+
+    matches, fixtures = synthetic.generate(seasons=2, seed=31)
+    # Fixture is frozen, so build a played-already one rather than mutating.
+    fixtures = [dataclasses.replace(fixtures[0], date=date.today() - timedelta(days=3))
+                ] + list(fixtures[1:])
+    store = DataStore(league="E0", matches=matches, fixtures=fixtures,
+                      source="live", loaded_at=date.today())
+    store.replace_data(matches, [], "live", fixtures_error="provider down")
+    assert len(store.fixtures) == len(fixtures) - 1
+    assert all(f.date >= date.today() for f in store.fixtures)
+
+
+def test_health_reports_why_the_fixture_list_is_empty():
+    store, matches, _ = _live_store()
+    store.replace_data(matches, [], "live", fixtures_error="429 out of quota")
+    body = TestClient(create_app(store)).get("/api/health").json()
+    assert body["fixtures_error"] == "429 out of quota"
+
+
+def test_an_empty_card_says_whether_it_was_the_provider_or_the_calendar():
+    """"0 fixtures" with no explanation is the failure that cost a day."""
+    matches, _ = synthetic.generate(seasons=2, seed=31)
+    broken = DataStore(league="E0", matches=matches, fixtures=[], source="live",
+                       loaded_at=date.today(), fixtures_error="401 unauthorised")
+    detail = TestClient(create_app(broken)).get("/api/slate").json()["detail"]
+    assert "provider problem" in detail
+    assert "401 unauthorised" in detail
+
+    quiet = DataStore(league="E0", matches=matches, fixtures=[], source="live",
+                      loaded_at=date.today())
+    detail = TestClient(create_app(quiet)).get("/api/slate").json()["detail"]
+    assert "between seasons" in detail
+    assert "provider problem" not in detail

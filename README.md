@@ -461,6 +461,23 @@ Scan it, or type the address. Three things to know:
 If it will not connect, it is almost always one of: the firewall said no, or
 the phone is on mobile data rather than the wifi.
 
+### When it shows 0 fixtures
+
+Two very different causes, and the dashboard now tells you which:
+
+- **The provider failed** — bad key, spent quota, network. `/api/health` carries
+  `fixtures_error` and the empty-card message names the provider and the error.
+  Check with `bettingedge env`, and remember each loaded league is a separate
+  poll against your monthly allowance.
+- **There genuinely is no card** — between seasons, during an international
+  break, or midweek in a division that plays weekends. Nothing is wrong; try
+  another league in the dropdown.
+
+A failed fetch no longer replaces a good fixture list with an empty one. The
+previous card keeps being served (minus anything that has already kicked off)
+and the error is surfaced, because a dashboard reading "0 fixtures" with a clean
+bill of health is the worst kind of wrong.
+
 ### Multiple leagues
 
 `serve` (unlike `recommend`) can preload several divisions side by side, each
