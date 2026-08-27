@@ -57,9 +57,14 @@ class DataStore:
     # rather than because there genuinely is no upcoming card. The two look
     # identical from the outside and must not be treated the same.
     fixtures_error: str | None = None
+    # Provider calls left this month, as last reported. Kept on the store so it
+    # can be read from /api/health on a phone, rather than only existing in
+    # terminal scrollback that has long since scrolled away.
+    quota_remaining: str | None = None
 
     def replace_data(self, matches: list[Match], fixtures: list[Fixture],
-                     source: str, fixtures_error: str | None = None) -> None:
+                     source: str, fixtures_error: str | None = None,
+                     quota_remaining: str | None = None) -> None:
         """Swap in newly fetched data and drop everything derived from the old.
 
         Holding the lock for the whole swap means a request in flight either
@@ -84,6 +89,8 @@ class DataStore:
             self.refreshed_at = datetime.now()
             self.last_refresh_error = None
             self.fixtures_error = fixtures_error
+            if quota_remaining is not None:
+                self.quota_remaining = quota_remaining
             self._slate_cache.clear()
             self._backtest_cache.clear()
 
@@ -298,6 +305,8 @@ def create_app(store: DataStore, token: str | None = None,
                 "name": LEAGUES.get(code, code),
                 "matches": len(s.matches),
                 "fixtures": len(s.fixtures),
+                "fixtures_error": s.fixtures_error,
+                "quota_remaining": s.quota_remaining,
                 "is_primary": code == store.league,
             }
             for code, s in all_stores.items()
@@ -318,6 +327,7 @@ def create_app(store: DataStore, token: str | None = None,
             "refreshed_at": s.refreshed_at.isoformat(timespec="seconds"),
             "refresh_error": s.last_refresh_error,
             "fixtures_error": s.fixtures_error,
+            "quota_remaining": s.quota_remaining,
             "available_leagues": sorted(all_stores),
             "disclaimer": DISCLAIMER,
         }
@@ -572,6 +582,7 @@ def load_store(league: str = "E0", seasons: int = 4, offline: bool = False,
     print(f"  {len(matches)} matches")
 
     fixtures_error: str | None = None
+    quota_remaining: str | None = None
     if odds_provider == "footballdata":
         try:
             fixtures = source.fixtures([league])
@@ -602,6 +613,7 @@ def load_store(league: str = "E0", seasons: int = 4, offline: bool = False,
         # turns "0 fixtures" from a mystery into a number you can act on, and
         # warns before the quota runs out rather than after.
         remaining = getattr(provider, "quota_remaining", None)
+        quota_remaining = remaining
         if remaining is not None:
             print(f"  provider quota: {remaining} call(s) left this month")
             try:
@@ -625,7 +637,8 @@ def load_store(league: str = "E0", seasons: int = 4, offline: bool = False,
 
     return DataStore(league=league, matches=matches, fixtures=fixtures,
                      source=source_label, loaded_at=date.today(),
-                     fixtures_error=fixtures_error)
+                     fixtures_error=fixtures_error,
+                     quota_remaining=quota_remaining)
 
 
 def start_refresh_loop(store: DataStore, minutes: int, **load_kwargs) -> threading.Thread | None:
@@ -659,7 +672,8 @@ def start_refresh_loop(store: DataStore, minutes: int, **load_kwargs) -> threadi
                 if not fresh.matches:
                     raise RuntimeError("refresh returned no match history")
                 store.replace_data(fresh.matches, fresh.fixtures, fresh.source,
-                                   fixtures_error=fresh.fixtures_error)
+                                   fixtures_error=fresh.fixtures_error,
+                                   quota_remaining=fresh.quota_remaining)
                 if fresh.fixtures_error:
                     store.last_refresh_error = (
                         f"{datetime.now():%Y-%m-%d %H:%M} — fixtures not refreshed: "

@@ -1087,3 +1087,34 @@ def test_an_empty_card_says_whether_it_was_the_provider_or_the_calendar():
     detail = TestClient(create_app(quiet)).get("/api/slate").json()["detail"]
     assert "between seasons" in detail
     assert "provider problem" not in detail
+
+
+def test_quota_is_visible_per_league_without_reading_the_terminal():
+    """Scrollback is not a diagnostic; the phone must be able to ask."""
+    matches, fixtures = synthetic.generate(seasons=2, seed=41)
+    a = DataStore(league="E0", matches=matches, fixtures=fixtures, source="live",
+                  loaded_at=date.today(), quota_remaining="37")
+    b = DataStore(league="SP1", matches=matches, fixtures=[], source="live",
+                  loaded_at=date.today(), quota_remaining="0",
+                  fixtures_error="monthly provider quota is spent (0 calls left)")
+    client = TestClient(create_app(a, extra_stores={"SP1": b}))
+
+    health = client.get("/api/health").json()
+    assert health["quota_remaining"] == "37"
+
+    rows = {row["code"]: row for row in client.get("/api/leagues").json()}
+    assert rows["E0"]["fixtures"] > 0 and rows["E0"]["fixtures_error"] is None
+    assert rows["SP1"]["fixtures"] == 0
+    assert "quota" in rows["SP1"]["fixtures_error"]
+    assert rows["SP1"]["quota_remaining"] == "0"
+
+
+def test_a_refresh_without_a_quota_reading_keeps_the_last_one():
+    """A footballdata refresh reports no quota; that must not erase it."""
+    matches, fixtures = synthetic.generate(seasons=2, seed=41)
+    store = DataStore(league="E0", matches=matches, fixtures=fixtures, source="live",
+                      loaded_at=date.today(), quota_remaining="37")
+    store.replace_data(matches, fixtures, "live", quota_remaining=None)
+    assert store.quota_remaining == "37"
+    store.replace_data(matches, fixtures, "live", quota_remaining="12")
+    assert store.quota_remaining == "12"
