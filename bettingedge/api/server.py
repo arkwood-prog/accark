@@ -589,6 +589,7 @@ def load_store(league: str = "E0", seasons: int = 4, offline: bool = False,
         info = PROVIDER_INFO[odds_provider]
         print(f"Loading live prices from {info.title} ...")
         extra = {"sport_key": sport_key} if odds_provider == "theoddsapi" and sport_key else {}
+        provider = None
         try:
             provider = get_provider(odds_provider, api_key=api_key, **extra)
             fixtures = provider.fixtures(league)
@@ -596,6 +597,19 @@ def load_store(league: str = "E0", seasons: int = 4, offline: bool = False,
         except Exception as exc:
             print(f"  ! could not load live fixtures: {exc}")
             fixtures, fixtures_error = [], str(exc)
+
+        # Every response carries the plan's remaining allowance. Printing it
+        # turns "0 fixtures" from a mystery into a number you can act on, and
+        # warns before the quota runs out rather than after.
+        remaining = getattr(provider, "quota_remaining", None)
+        if remaining is not None:
+            print(f"  provider quota: {remaining} call(s) left this month")
+            try:
+                if int(remaining) <= 0:
+                    fixtures_error = (fixtures_error or
+                                      "monthly provider quota is spent (0 calls left)")
+            except ValueError:
+                pass
 
         if fixtures:
             # A live provider spells teams differently than the results this

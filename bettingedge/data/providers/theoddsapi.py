@@ -78,6 +78,7 @@ class TheOddsAPI:
         self.dump_raw = Path(dump_raw) if dump_raw else None
         self.sport_key = sport_key
         self.quota_remaining: str | None = None
+        self.quota_used: str | None = None
 
     @property
     def api_key(self) -> str:
@@ -111,6 +112,10 @@ class TheOddsAPI:
     # -- the interface --------------------------------------------------
     def fixtures(self, league: str, days_ahead: int = 7) -> list[Fixture]:
         sport = self._sport_key(league)
+        # The API reports the plan's remaining allowance on every response.
+        # Reading it is how "0 fixtures" can say "you have 0 calls left" rather
+        # than leaving you to guess between a spent quota and a quiet weekend.
+        seen: dict[str, str] = {}
         payload = request_json(
             f"{BASE_URL}/sports/{sport}/odds",
             {
@@ -121,7 +126,10 @@ class TheOddsAPI:
                 "dateFormat": "iso",
             },
             timeout=self.timeout,
+            capture_headers=seen,
         )
+        self.quota_remaining = seen.get("x-requests-remaining")
+        self.quota_used = seen.get("x-requests-used")
         if self.dump_raw:
             self.dump_raw.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 

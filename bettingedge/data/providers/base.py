@@ -148,14 +148,25 @@ def api_key_for(env_names: Iterable[str], explicit: str | None = None) -> str:
 
 
 def request_json(url: str, params: dict[str, Any], timeout: int = 25,
-                 headers: dict[str, str] | None = None) -> Any:
-    """GET some JSON, turning the usual failures into readable messages."""
+                 headers: dict[str, str] | None = None,
+                 capture_headers: dict[str, str] | None = None) -> Any:
+    """GET some JSON, turning the usual failures into readable messages.
+
+    ``capture_headers``, when given, is filled in with the response headers, so
+    a caller can read quota counters without this function having to know what
+    any particular provider calls them.
+    """
     import requests
 
     try:
         response = requests.get(url, params=params, headers=headers or {}, timeout=timeout)
     except Exception as exc:
         raise ProviderError(f"could not reach {url}: {exc}") from exc
+
+    if capture_headers is not None:
+        # Before the status checks, so a 429 still hands back the counters that
+        # explain it.
+        capture_headers.update({k.lower(): v for k, v in response.headers.items()})
 
     if response.status_code == 401:
         raise ProviderError("the provider rejected your API key (401).")

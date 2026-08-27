@@ -617,3 +617,59 @@ def test_season_boundary_is_july_not_january():
 
 def test_current_squad_on_no_matches_reports_nothing_rather_than_guessing():
     assert current_squad([]) == (set(), None)
+
+
+# ------------------------------------------------------------ quota headers
+def test_request_json_hands_back_response_headers():
+    """Quota counters live in headers; a caller must be able to read them."""
+    import bettingedge.data.providers.base as base
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"X-Requests-Remaining": "37", "X-Requests-Used": "463"}
+
+        @staticmethod
+        def json():
+            return [{"ok": True}]
+
+    class FakeRequests:
+        @staticmethod
+        def get(*args, **kwargs):
+            return FakeResponse()
+
+    import sys, types
+    sys.modules["requests"] = types.SimpleNamespace(get=FakeRequests.get)
+    try:
+        seen = {}
+        body = base.request_json("http://example/x", {}, capture_headers=seen)
+        assert body == [{"ok": True}]
+        # Lower-cased, so callers need not guess the provider's capitalisation.
+        assert seen["x-requests-remaining"] == "37"
+        assert seen["x-requests-used"] == "463"
+    finally:
+        sys.modules.pop("requests", None)
+
+
+def test_quota_headers_are_captured_even_when_the_call_is_rejected():
+    """A 429 is exactly when you most want to see the counter."""
+    import bettingedge.data.providers.base as base
+    from bettingedge.data.providers import ProviderError
+
+    class FakeResponse:
+        status_code = 429
+        headers = {"x-requests-remaining": "0"}
+        text = "quota"
+
+        @staticmethod
+        def json():
+            return {}
+
+    import sys, types
+    sys.modules["requests"] = types.SimpleNamespace(get=lambda *a, **k: FakeResponse())
+    try:
+        seen = {}
+        with pytest.raises(ProviderError):
+            base.request_json("http://example/x", {}, capture_headers=seen)
+        assert seen["x-requests-remaining"] == "0"
+    finally:
+        sys.modules.pop("requests", None)
