@@ -1172,3 +1172,53 @@ def test_env_never_prints_the_value_it_just_saved(tmp_path, monkeypatch, capsys)
     output = capsys.readouterr().out
     assert "super-secret-value" not in output
     assert "ODDS_API_KEY" in output
+
+
+# --------------------------------------------------------- quota estimates
+def test_quota_estimate_uses_the_providers_own_billing_period():
+    """A monthly figure against a daily cap tells you nothing useful."""
+    from bettingedge.api.server import _quota_note
+
+    monthly = _quota_note("theoddsapi", 7, 720)
+    daily = _quota_note("apifootball", 7, 720)
+    assert "calls/month" in monthly and "The Odds API" in monthly
+    assert "calls/day" in daily and "API-Football" in daily
+
+
+def test_quota_estimate_counts_two_calls_per_league_for_api_football():
+    """It fetches a fixture list and then the odds for it."""
+    from bettingedge.api.server import _quota_note
+
+    # 7 leagues, refreshing twice a day: 7 * 2 * 2 = 28.
+    assert "about 28 " in _quota_note("apifootball", 7, 720)
+    # The Odds API answers in one request per league: 7 * 2 * 30 = 420/month.
+    assert "about 420 " in _quota_note("theoddsapi", 7, 720)
+
+
+def test_quota_estimate_warns_only_when_the_configuration_overspends():
+    from bettingedge.api.server import _quota_note
+
+    assert "free tier" not in _quota_note("theoddsapi", 7, 720)      # 420 of 500
+    assert "free tier of 500/month" in _quota_note("theoddsapi", 7, 360)  # 840
+    assert "free tier" not in _quota_note("apifootball", 7, 360)     # 56 of 100
+    assert "free tier of 100/day" in _quota_note("apifootball", 20, 120)
+
+
+def test_quota_estimate_says_nothing_about_limits_for_the_free_feed():
+    from bettingedge.api.server import _quota_note
+
+    note = _quota_note("footballdata", 7, 360)
+    assert "free tier" not in note and "calls/" not in note
+
+
+def test_every_provider_declares_a_consistent_budget():
+    """The prose free_tier and the numbers must not drift apart."""
+    from bettingedge.data.providers import PROVIDER_INFO
+
+    for key, info in PROVIDER_INFO.items():
+        assert info.calls_per_refresh >= 1, key
+        if info.free_limit is None:
+            assert "unlimited" in info.free_tier, key
+        else:
+            assert str(info.free_limit) in info.free_tier, key
+            assert info.free_period in info.free_tier, key

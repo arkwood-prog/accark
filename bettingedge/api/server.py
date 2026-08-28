@@ -223,6 +223,31 @@ def _web_file(name: str, media_type: str) -> FileResponse:
                         headers={"Cache-Control": "no-cache"})
 
 
+def _quota_note(odds_provider: str, leagues: int, refresh_minutes: int) -> str:
+    """How many provider calls this configuration will actually spend.
+
+    Quoted in the provider's own billing period, because the free allowances are
+    not comparable: The Odds API caps a month, API-Football caps a day, and a
+    refresh costs one call per league on the first and two on the second. A
+    monthly figure against a daily cap tells you nothing useful.
+    """
+    from ..data.providers import PROVIDER_INFO
+
+    info = PROVIDER_INFO.get(odds_provider)
+    if info is None or info.free_limit is None:
+        return f" — {leagues} live league(s)"
+
+    per_day = (24 * 60 / refresh_minutes) * leagues * info.calls_per_refresh
+    spend = per_day if info.free_period == "day" else per_day * 30
+    note = (f" — {leagues} live league(s), about {spend:.0f} "
+            f"{info.title} calls/{info.free_period} combined")
+    if spend > info.free_limit * 0.9:
+        note += (f"  ** at or beyond the free tier of {info.free_limit}"
+                 f"/{info.free_period} — raise --refresh-minutes or load fewer "
+                 "leagues **")
+    return note
+
+
 def _tag_current_squad(model_payload: dict, matches: list[Match]) -> dict:
     """Mark which rated teams are in the division now.
 
@@ -732,16 +757,13 @@ def run_server(host: str = "127.0.0.1", port: int = 8000, league: str = "E0",
         )
 
     if refresh_minutes > 0:
-        per_month = (24 * 60 / refresh_minutes) * 30 * max(live_leagues_refreshing, 1)
         note = f"refreshing every {refresh_minutes} min"
         if live_leagues_refreshing:
-            # The Odds API free tier is 500 requests/month, shared across every
-            # league loaded — burning through it silently at 3am is exactly the
-            # kind of thing worth saying out loud, and it scales with league count.
-            note += (f" — {live_leagues_refreshing} live league(s), about "
-                     f"{per_month:.0f} provider calls/month combined")
-            if per_month > 450:
-                note += "  ** likely to exhaust a 500/month free tier **"
+            # Budget arithmetic has to follow the provider actually in use. The
+            # allowance is capped per day on one and per month on another, and a
+            # refresh costs one call per league on one and two on the other, so
+            # quoting The Odds API's numbers for every provider is simply wrong.
+            note += _quota_note(odds_provider, live_leagues_refreshing, refresh_minutes)
         print(note)
 
     primary_code = codes[0] if codes[0] in STORES else next(iter(STORES))

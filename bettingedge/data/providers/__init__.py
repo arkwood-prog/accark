@@ -28,6 +28,13 @@ class ProviderInfo:
     free_tier: str
     markets: str
     notes: str
+    # Machine-readable form of free_tier, so the server can do budget arithmetic
+    # instead of the caller parsing English. calls_per_refresh is per league per
+    # cycle: The Odds API answers with every book's price in one request, while
+    # API-Football needs a fixture list and then the odds for it.
+    calls_per_refresh: int = 1
+    free_limit: int | None = None
+    free_period: str = "month"
 
 
 PROVIDER_INFO: dict[str, ProviderInfo] = {
@@ -37,6 +44,8 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
         url="https://www.football-data.co.uk",
         env_vars=(),
         free_tier="unlimited, no key",
+        calls_per_refresh=1,
+        free_limit=None,
         markets="1X2, over/under 2.5",
         notes=("The only free source carrying results and closing prices together, so "
                "it stays the source for history and backtesting. Its fixtures feed "
@@ -48,6 +57,9 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
         url="https://the-odds-api.com",
         env_vars=("ODDS_API_KEY", "THE_ODDS_API_KEY"),
         free_tier="about 500 requests/month",
+        calls_per_refresh=1,
+        free_limit=500,
+        free_period="month",
         markets="1X2, over/under (all lines), BTTS on some plans",
         notes=("Best free option for live prices. Returns every book's price per "
                "fixture, so best price and sharp reference come from one snapshot."),
@@ -58,6 +70,9 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
         url="https://www.api-football.com",
         env_vars=("API_FOOTBALL_KEY", "APIFOOTBALL_KEY", "RAPIDAPI_KEY"),
         free_tier="about 100 requests/day",
+        calls_per_refresh=2,
+        free_limit=100,
+        free_period="day",
         markets="1X2, over/under, BTTS",
         notes=("Wider league coverage and a useful fallback when The Odds API's "
                "monthly quota runs out. Costs two requests per run."),
