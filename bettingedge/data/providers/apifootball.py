@@ -99,6 +99,19 @@ class APIFootball:
             # The API reports auth and quota problems in the body, not the status.
             errors = payload.get("errors")
             if errors:
+                # The free plan reports a refusal here, with HTTP 200 and an
+                # empty response. Worth naming plainly: the odds endpoint and
+                # the current season are both outside it, so no amount of
+                # retrying or quota-saving will make this provider work on a
+                # free key — the free football-data.co.uk feed will.
+                if isinstance(errors, dict) and "plan" in errors:
+                    raise ProviderError(
+                        f"API-Football refused this request on your plan: {errors['plan']}\n"
+                        "Its free tier does not cover live odds for the current season, so "
+                        "it cannot be used as a fallback.\n"
+                        "Use --odds-provider footballdata instead: no key, no quota, and it "
+                        "carries the coming weekend's fixtures with prices."
+                    )
                 raise ProviderError(f"API-Football returned errors: {errors}")
             return payload.get("response") or []
         raise ProviderError("unexpected payload from API-Football; try --dump-raw")

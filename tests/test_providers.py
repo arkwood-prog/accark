@@ -673,3 +673,30 @@ def test_quota_headers_are_captured_even_when_the_call_is_rejected():
         assert seen["x-requests-remaining"] == "0"
     finally:
         sys.modules.pop("requests", None)
+
+
+def test_api_football_plan_refusal_names_the_working_alternative():
+    """A free key cannot do live odds; saying so beats a raw dict."""
+    import sys, types
+    import bettingedge.data.providers.base as base
+    from bettingedge.data.providers import ProviderError
+
+    class FakeResponse:
+        status_code = 200
+        headers = {}
+
+        @staticmethod
+        def json():
+            return {"errors": {"plan": "Free plans do not have access to this feature."},
+                    "response": []}
+
+    sys.modules["requests"] = types.SimpleNamespace(get=lambda *a, **k: FakeResponse())
+    try:
+        client = APIFootball(api_key="k")
+        with pytest.raises(ProviderError) as caught:
+            client.fixtures("E0")
+        message = str(caught.value)
+        assert "Free plans do not have access" in message
+        assert "footballdata" in message, "must point at the option that works"
+    finally:
+        sys.modules.pop("requests", None)
