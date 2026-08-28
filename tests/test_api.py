@@ -1118,3 +1118,57 @@ def test_a_refresh_without_a_quota_reading_keeps_the_last_one():
     assert store.quota_remaining == "37"
     store.replace_data(matches, fixtures, "live", quota_remaining="12")
     assert store.quota_remaining == "12"
+
+
+# ------------------------------------------------------------ env --set
+def test_env_set_adds_and_updates_without_touching_the_rest(tmp_path):
+    from bettingedge.cli import write_env_setting
+
+    env = tmp_path / ".env"
+    env.write_text("# my keys\nODDS_API_KEY=old\nSOMETHING_ELSE=keep-me\n")
+    assert write_env_setting(env, "API_FOOTBALL_KEY", "new123") == "added"
+    assert write_env_setting(env, "ODDS_API_KEY", "replaced") == "updated"
+    text = env.read_text()
+    assert "# my keys" in text, "comments must survive"
+    assert "SOMETHING_ELSE=keep-me" in text, "unknown settings must survive"
+    assert "ODDS_API_KEY=replaced" in text
+    assert "ODDS_API_KEY=old" not in text
+    assert "API_FOOTBALL_KEY=new123" in text
+
+
+def test_env_set_creates_the_file_when_there_is_none(tmp_path):
+    from bettingedge.cli import write_env_setting
+
+    env = tmp_path / ".env"
+    assert write_env_setting(env, "ODDS_API_KEY", "abc") == "added"
+    assert env.read_text().strip() == "ODDS_API_KEY=abc"
+
+
+def test_env_set_ignores_a_commented_out_key(tmp_path):
+    """A commented line is not a setting; appending must not un-comment it."""
+    from bettingedge.cli import write_env_setting
+
+    env = tmp_path / ".env"
+    env.write_text("#ODDS_API_KEY=disabled\n")
+    write_env_setting(env, "ODDS_API_KEY", "live")
+    text = env.read_text()
+    assert "#ODDS_API_KEY=disabled" in text
+    assert "\nODDS_API_KEY=live" in text
+
+
+def test_env_set_rejects_bad_input(capsys):
+    assert main(["env", "--set", "NOEQUALS"]) == 1
+    assert "NAME=value" in capsys.readouterr().err
+    assert main(["env", "--set", "RANDOM_THING=1"]) == 1
+    assert "not a bettingedge setting" in capsys.readouterr().err
+
+
+def test_env_never_prints_the_value_it_just_saved(tmp_path, monkeypatch, capsys):
+    """A key typed into a shared screen must not end up in scrollback."""
+    import bettingedge.cli as cli
+
+    monkeypatch.setattr(cli.Path, "resolve", lambda self: tmp_path / "pkg" / "x")
+    assert main(["env", "--set", "ODDS_API_KEY=super-secret-value"]) == 0
+    output = capsys.readouterr().out
+    assert "super-secret-value" not in output
+    assert "ODDS_API_KEY" in output

@@ -566,12 +566,56 @@ Undo any time with:  bettingedge autostart --remove
     return 0
 
 
+SETTABLE_KEYS = ("ODDS_API_KEY", "API_FOOTBALL_KEY", "BETTINGEDGE_TOKEN")
+
+
+def write_env_setting(env_file: Path, name: str, value: str) -> str:
+    """Add or update one KEY=value in the .env, leaving the rest untouched.
+
+    Rewriting the file wholesale would lose comments and any setting this
+    command does not know about, so the matching line is replaced in place and
+    everything else is copied through verbatim.
+    """
+    lines = (env_file.read_text(encoding="utf-8").splitlines()
+             if env_file.exists() else [])
+    replacement = f"{name}={value}"
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("#") or "=" not in stripped:
+            continue
+        if stripped.split("=", 1)[0].strip() == name:
+            lines[i] = replacement
+            env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            return "updated"
+    lines.append(replacement)
+    env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return "added"
+
+
 def cmd_env(args: argparse.Namespace) -> int:
     """Show which settings were found, without ever printing a secret."""
     import os
 
     repo = Path(__file__).resolve().parent.parent
     env_file = repo / ".env"
+
+    for assignment in getattr(args, "set", None) or []:
+        name, separator, value = assignment.partition("=")
+        name, value = name.strip(), value.strip()
+        if not separator or not name or not value:
+            print(f"Error: expected NAME=value, got {assignment!r}", file=sys.stderr)
+            return 1
+        if name not in SETTABLE_KEYS:
+            print(f"Error: {name} is not a bettingedge setting. Known: "
+                  f"{', '.join(SETTABLE_KEYS)}", file=sys.stderr)
+            return 1
+        what = write_env_setting(env_file, name, value)
+        # The value is never echoed, so a shared screen or a scrollback buffer
+        # cannot leak a key that was just typed.
+        print(f"{what} {name} in {env_file}")
+        os.environ[name] = value
+    if getattr(args, "set", None):
+        print("Restart `bettingedge serve` for it to take effect.\n")
 
     print(f"\n.env file: {env_file}")
     print("  found" if env_file.exists() else
@@ -782,7 +826,11 @@ def build_parser() -> argparse.ArgumentParser:
     autostart.set_defaults(func=cmd_autostart)
 
     env_cmd = subparsers.add_parser(
-        "env", help="show which API keys and settings the app can see")
+        "env", help="show or set the API keys and settings the app can see")
+    env_cmd.add_argument("--set", action="append", metavar="NAME=value",
+                         help="save a setting to the .env so it survives closing "
+                              "the terminal (repeatable). e.g. --set "
+                              "API_FOOTBALL_KEY=abc123")
     env_cmd.set_defaults(func=cmd_env)
 
     providers = subparsers.add_parser(
